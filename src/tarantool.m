@@ -48,6 +48,7 @@
 #include <admin.h>
 #include <replication.h>
 #include <fiber.h>
+#include <iobuf.h>
 #include <coeio.h>
 #include <iproto.h>
 #include <latch.h>
@@ -344,11 +345,10 @@ snapshot(void *ev, int events __attribute__((unused)))
 		 */
 
 		snapshot_pid = p;
-		int status = wait_for_child(p);
+		int status = fiber_wait_for_child(p);
 		snapshot_pid = 0;
 		return (WIFSIGNALED(status) ? EINTR : WEXITSTATUS(status));
 	}
-
 	fiber_set_name(fiber, "dumper");
 	set_proc_title("dumper (%" PRIu32 ")", getppid());
 
@@ -577,7 +577,7 @@ tarantool_free(void)
 	 * Got to be done prior to anything else, since GC
 	 * handlers can refer to other subsystems (e.g. fibers).
 	 */
-	if (tarantool_L)
+	if (tarantool_L && snapshot_pid != getpid())
 		tarantool_lua_close(tarantool_L);
 
 	recovery_free();
@@ -613,6 +613,7 @@ initialize(double slab_alloc_arena, int slab_alloc_minimal, double slab_alloc_fa
 	if (!salloc_init(slab_alloc_arena * (1 << 30), slab_alloc_minimal, slab_alloc_factor))
 		panic_syserror("can't initialize slab allocator");
 	fiber_init();
+	iobuf_init_readahead(cfg.readahead);
 	coeio_init();
 }
 

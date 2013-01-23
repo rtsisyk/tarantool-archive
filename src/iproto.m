@@ -36,6 +36,7 @@
 #include "exception.h"
 #include "errcode.h"
 #include "fiber.h"
+#include "palloc.h"
 #include "say.h"
 #include "tbuf.h"
 #include "box/box.h"
@@ -44,6 +45,7 @@
 #include "box/request.h"
 #include "iobuf.h"
 #include "evio.h"
+#include "coio.h"
 #include "session.h"
 
 enum {
@@ -191,12 +193,7 @@ struct iproto_queue
 	 * Main function of the fiber invoked to handle
 	 * all outstanding tasks in this queue.
 	 */
-	void (*handler)(va_list);
-	/**
-	 * Cache of fibers which work on requests
-	 * in this queue.
-         */
-	struct rlist fiber_cache;
+	void (*handler)(void);
 	/**
 	 * Used to trigger request processing when
 	 * the queue becomes non-empty.
@@ -290,14 +287,10 @@ iproto_dequeue_request(struct iproto_queue *i_queue,
 	return true;
 }
 
-/** Put the current fiber into a queue fiber cache. */
-static inline void
-iproto_cache_fiber(struct iproto_queue *i_queue)
-{
-	fiber_gc();
-	rlist_add_entry(&i_queue->fiber_cache, fiber, state);
-	fiber_yield();
-}
+static void
+iproto_queue_handler(void);
+
+static int IPROTO_QUEUE_HANDLER_ARGS_TAG = 0;
 
 /** Create fibers to handle all outstanding tasks. */
 static void
@@ -306,18 +299,14 @@ iproto_queue_schedule(struct ev_async *watcher,
 {
 	struct iproto_queue *i_queue = watcher->data;
 	while (! iproto_queue_is_empty(i_queue)) {
-
-		struct fiber *f = rlist_shift_entry(&i_queue->fiber_cache,
-						    struct fiber, state);
-		if (f == NULL)
-			f = fiber_create("iproto", i_queue->handler);
-		fiber_call(f, i_queue);
+		struct fiber *f = fiber_new("iproto", i_queue->handler);
+		fiber_resume(f, &IPROTO_QUEUE_HANDLER_ARGS_TAG, i_queue);
 	}
 }
 
 static inline void
 iproto_queue_init(struct iproto_queue *i_queue,
-		  int size, void (*handler)(va_list))
+		  int size, void (*handler)(void))
 {
 	i_queue->size = size;
 	i_queue->begin = i_queue->end = 0;
@@ -330,22 +319,22 @@ iproto_queue_init(struct iproto_queue *i_queue,
 	ev_async_init(&i_queue->watcher, iproto_queue_schedule);
 	i_queue->watcher.data = i_queue;
 	i_queue->handler = handler;
-	rlist_init(&i_queue->fiber_cache);
 }
 
 /** A handler to process all queued requests. */
 static void
-iproto_queue_handler(va_list ap)
+iproto_queue_handler(void)
 {
+	assert(fiber_args_format() == &IPROTO_QUEUE_HANDLER_ARGS_TAG);
+	va_list ap;
+	fiber_args_start(ap);
 	struct iproto_queue *i_queue = va_arg(ap, struct iproto_queue *);
-	struct iproto_request request;
-restart:
-	while (iproto_dequeue_request(i_queue, &request)) {
+	fiber_args_end(ap);
 
+	struct iproto_request request;
+	while (iproto_dequeue_request(i_queue, &request)) {
 		request.process(&request);
 	}
-	iproto_cache_fiber(&request_queue);
-	goto restart;
 }
 
 /* }}} */
@@ -375,7 +364,7 @@ struct iproto_session
 	 * relative to in->end, rather than to in->pos is helpful to
 	 * make sure ibuf_reserve() or iobuf rotation don't make
 	 * the value meaningless.
-         */
+	 */
 	ssize_t parse_size;
 	/** Current write position in the output buffer */
 	struct obuf_svp write_pos;
@@ -478,7 +467,7 @@ iproto_session_shutdown(struct iproto_session *session)
 	 * If the session is not idle it will
 	 * be destroyed only after all its requests
 	 * are processed (and dropped).
-         */
+	 */
 	iproto_enqueue_request(&request_queue, session,
 			       session->iobuf[0], &dummy_header,
 			       iproto_process_disconnect);

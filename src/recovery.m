@@ -35,6 +35,8 @@
 #include "tarantool_pthread.h"
 #include "fio.h"
 #include "errinj.h"
+#include <palloc.h>
+#include "third_party/queue.h"
 
 /*
  * Recovery subsystem
@@ -111,16 +113,27 @@ wait_lsn_set(struct wait_lsn *wait_lsn, int64_t lsn)
 {
 	assert(wait_lsn->waiter == NULL);
 	wait_lsn->waiter = fiber;
+	fiber_ref(fiber, 1);
 	wait_lsn->lsn = lsn;
 }
 
+void
+wait_lsn_clear(struct wait_lsn *wait_lsn)
+{
+	fiber_ref(wait_lsn->waiter, -1);
+	wait_lsn->waiter = NULL;
+	wait_lsn->lsn = 0LL;
+}
 
 /* Alert the waiter, if any. */
 static inline void
 wakeup_lsn_waiter(struct recovery_state *r)
 {
-	if (r->wait_lsn.waiter && r->confirmed_lsn >= r->wait_lsn.lsn)
+	if (r->wait_lsn.waiter && r->confirmed_lsn >= r->wait_lsn.lsn) {
+		if (fiber_state(r->wait_lsn.waiter) >= FIBER_STOPPED)
+			return;
 		fiber_wakeup(r->wait_lsn.waiter);
+	}
 }
 
 void
@@ -144,10 +157,10 @@ confirm_lsn(struct recovery_state *r, int64_t lsn, bool is_commit)
 		 * confirmed_lsn, in case of disk write failure, but
 		 * wal_writer never confirms LSNs out order.
 		 */
-		assert(false);
 		say_error("LSN is used twice or COMMIT order is broken: "
 			  "confirmed: %jd, new: %jd",
 			  (intmax_t) r->confirmed_lsn, (intmax_t) lsn);
+		assert(false);
 	}
 	wakeup_lsn_waiter(r);
 }
@@ -168,7 +181,7 @@ recovery_wait_lsn(struct recovery_state *r, int64_t lsn)
 	while (lsn < r->confirmed_lsn) {
 		wait_lsn_set(&r->wait_lsn, lsn);
 		@try {
-			fiber_yield();
+			fiber_sleep(FIBER_TIMEOUT_INFINITY);
 		} @finally {
 			wait_lsn_clear(&r->wait_lsn);
 		}
@@ -218,7 +231,8 @@ recovery_init(const char *snap_dirname, const char *wal_dirname,
 	r->wal_dir->dirname = strdup(wal_dirname);
 	r->wal_dir->open_wflags = r->wal_mode == WAL_FSYNC ? WAL_SYNC_FLAG : 0;
 	r->rows_per_wal = rows_per_wal;
-	wait_lsn_clear(&r->wait_lsn);
+	r->wait_lsn.waiter = NULL;
+	r->wait_lsn.lsn = 0LL;
 	r->flags = flags;
 }
 
@@ -314,6 +328,7 @@ recover_snap(struct recovery_state *r)
 				break;
 		}
 	}
+
 	log_io_cursor_close(&i);
 	log_io_close(&snap);
 
@@ -353,6 +368,7 @@ recover_wal(struct recovery_state *r, struct log_io *l)
 			say_debug("skipping too young row");
 			continue;
 		}
+
 		/*
 		 * After handler(row) returned, row may be
 		 * modified, do not use it.
@@ -538,7 +554,7 @@ recovery_finalize(struct recovery_state *r)
 
 		if (!r->current_wal->is_inprogress) {
 			if (r->current_wal->rows == 0)
-			        /* Regular WAL (not inprogress) must contain at least one row */
+				/* Regular WAL (not inprogress) must contain at least one row */
 				panic("zero rows was successfully read from last WAL `%s'",
 				      r->current_wal->filename);
 		} else if (r->current_wal->rows == 0) {
@@ -762,8 +778,13 @@ wal_schedule_queue(struct wal_fifo *queue)
 	 * destroys the list entry.
 	 */
 	struct wal_write_request *req, *tmp;
-	STAILQ_FOREACH_SAFE(req, queue, wal_fifo_entry, tmp)
-		fiber_call(req->fiber);
+	STAILQ_FOREACH_SAFE(req, queue, wal_fifo_entry, tmp) {
+		fiber_ref(req->fiber, -1);
+		if (fiber_state(req->fiber) >= FIBER_STOPPED)
+			continue;
+		fiber_wakeup(req->fiber);
+		//fiber_transfer(req->fiber);
+	}
 }
 
 static void
@@ -1114,6 +1135,7 @@ wal_write(struct recovery_state *r, i64 lsn, u64 cookie,
 		       sizeof(op) + row->size);
 
 	req->fiber = fiber;
+	fiber_ref(fiber, 1);
 	req->res = -1;
 	row_v11_fill(&req->row, lsn, XLOG, cookie, &op, sizeof(op),
 		     row->data, row->size);
@@ -1128,7 +1150,7 @@ wal_write(struct recovery_state *r, i64 lsn, u64 cookie,
 
 	(void) tt_pthread_mutex_unlock(&writer->mutex);
 
-	fiber_yield(); /* Request was inserted. */
+	fiber_sleep(FIBER_TIMEOUT_INFINITY); /* Request was inserted. */
 
 	return req->res;
 }
@@ -1204,8 +1226,10 @@ snapshot_save(struct recovery_state *r,
 	struct log_io *snap;
 	snap = log_io_open_for_write(r->snap_dir, r->confirmed_lsn,
 				     INPROGRESS);
+
 	if (snap == NULL)
 		panic_status(errno, "Failed to save snapshot: failed to open file in write mode.");
+
 	struct fio_batch *batch = fio_batch_alloc(sysconf(_SC_IOV_MAX));
 	if (batch == NULL)
 		panic_syserror("fio_batch_alloc");
@@ -1261,8 +1285,9 @@ read_log(const char *filename,
 
 	log_io_cursor_open(&i, l);
 	struct tbuf *row;
-	while ((row = log_io_cursor_next(&i)))
+	while ((row = log_io_cursor_next(&i))) {
 		h(param, row);
+	}
 
 	log_io_cursor_close(&i);
 	log_io_close(&l);

@@ -8,6 +8,16 @@ add_executable(rope_basic rope_basic.c ${CMAKE_SOURCE_DIR}/src/rope.c)
 add_executable(rope_avl rope_avl.c ${CMAKE_SOURCE_DIR}/src/rope.c)
 add_executable(rope_stress rope_stress.c ${CMAKE_SOURCE_DIR}/src/rope.c)
 add_executable(rope rope.c ${CMAKE_SOURCE_DIR}/src/rope.c)
+set(fiber_test_src
+    fiber.m 
+    ${CMAKE_SOURCE_DIR}/src/assoc.m
+    ${CMAKE_SOURCE_DIR}/src/fiber.m
+    ${CMAKE_SOURCE_DIR}/src/palloc.m
+)
+add_compile_flags("C;CXX" "-DFIBER_TRACE_STATE=1 -Wno-error=unused-function")
+set_source_files_compile_flags(${fiber_test_src})
+add_executable(fiber_test ${fiber_test_src})
+target_link_libraries(fiber_test ${common_libraries})
 add_executable(bit_test bit.c bit.c)
 target_link_libraries(bit_test bit)
 add_executable(objc_finally objc_finally.m)

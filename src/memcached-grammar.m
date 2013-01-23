@@ -996,8 +996,8 @@ tr169:
 		}
 #line 208 "src/memcached-grammar.rl"
 	{
-			struct fiber *f = fiber_create("flush_all", flush_all);
-			fiber_call(f, flush_delay);
+			struct fiber *f = fiber_new("flush_all", flush_all);
+			fiber_resume(f, &FLUSH_ALL_ARGS_TAG, flush_delay);
 			obuf_dup(out, "OK\r\n", 4);
 		}
 	goto st197;
@@ -1014,8 +1014,8 @@ tr174:
 		}
 #line 208 "src/memcached-grammar.rl"
 	{
-			struct fiber *f = fiber_create("flush_all", flush_all);
-			fiber_call(f, flush_delay);
+			struct fiber *f = fiber_new("flush_all", flush_all);
+			fiber_resume(f, &FLUSH_ALL_ARGS_TAG, flush_delay);
 			obuf_dup(out, "OK\r\n", 4);
 		}
 	goto st197;
@@ -1032,8 +1032,8 @@ tr185:
 		}
 #line 208 "src/memcached-grammar.rl"
 	{
-			struct fiber *f = fiber_create("flush_all", flush_all);
-			fiber_call(f, flush_delay);
+			struct fiber *f = fiber_new("flush_all", flush_all);
+			fiber_resume(f, &FLUSH_ALL_ARGS_TAG, flush_delay);
 			obuf_dup(out, "OK\r\n", 4);
 		}
 	goto st197;

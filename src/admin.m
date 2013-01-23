@@ -168,7 +168,7 @@ tarantool_info(struct tbuf *out)
 	tbuf_printf(out, "  lsn: %" PRIi64 CRLF,
 		    recovery_state->confirmed_lsn);
 	tbuf_printf(out, "  recovery_lag: %.3f" CRLF,
-		    recovery_state->remote ? 
+		    recovery_state->remote ?
 		    recovery_state->remote->recovery_lag : 0);
 	tbuf_printf(out, "  recovery_last_update: %.3f" CRLF,
 		    recovery_state->remote ?
@@ -1886,10 +1886,16 @@ case 134:
 }
 
 static void
-admin_handler(va_list ap)
+admin_handler(void)
 {
+	assert(fiber_args_format() == &COIO_HANDLER_ARGS_TAG);
+
+	va_list ap;
+	fiber_args_start(ap);
 	struct ev_io coio = va_arg(ap, struct ev_io);
 	struct iobuf *iobuf = va_arg(ap, struct iobuf *);
+	fiber_args_end(ap);
+
 	lua_State *L = lua_newthread(tarantool_L);
 	int coro_ref = luaL_ref(tarantool_L, LUA_REGISTRYINDEX);
 	@try {

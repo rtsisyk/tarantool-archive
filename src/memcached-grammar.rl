@@ -206,8 +206,8 @@ memcached_dispatch(struct ev_io *coio, struct iobuf *iobuf)
 		}
 
 		action flush_all {
-			struct fiber *f = fiber_create("flush_all", flush_all);
-			fiber_call(f, flush_delay);
+			struct fiber *f = fiber_new("flush_all", flush_all);
+			fiber_resume(f, &FLUSH_ALL_ARGS_TAG, flush_delay);
 			obuf_dup(out, "OK\r\n", 4);
 		}
 
@@ -300,8 +300,8 @@ memcached_dispatch(struct ev_io *coio, struct iobuf *iobuf)
 		flush_all = "flush_all"i (spc flush_delay)? noreply spc? eol @done @flush_all;
 		quit = "quit"i eol @done @quit;
 
-	        main := set | cas | add | replace | append | prepend | get | gets | delete | incr | decr | stats | flush_all | quit;
-	        #main := set;
+		main := set | cas | add | replace | append | prepend | get | gets | delete | incr | decr | stats | flush_all | quit;
+		#main := set;
 		write init;
 		write exec;
 	}%%

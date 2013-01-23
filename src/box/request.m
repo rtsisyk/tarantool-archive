@@ -37,7 +37,9 @@
 #include <tbuf.h>
 #include <pickle.h>
 #include <fiber.h>
+#include <palloc.h>
 #include <rope.h>
+#include "third_party/queue.h"
 
 STRS(requests, REQUESTS);
 STRS(update_op_codes, UPDATE_OP_CODES);
@@ -239,7 +241,7 @@ struct update_field {
 	 * Length of the "tail" in the old tuple from end
 	 * of old data to the beginning of the field in the
 	 * next update_field structure.
-         */
+	 */
 	u32 tail_len;
 };
 

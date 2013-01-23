@@ -35,6 +35,8 @@
 #include "iobuf.h"
 #include "sio.h"
 
+int COIO_HANDLER_ARGS_TAG = 0;
+
 /** Note: this function does not throw */
 void
 coio_init(struct ev_io *coio, int fd)
@@ -58,30 +60,30 @@ coio_connect(struct ev_io *coio, struct sockaddr_in *addr)
 	@try {
 		coio_init(coio, fd);
 
-                int on = 1;
-                /* libev is non-blocking */
-                sio_setfl(fd, O_NONBLOCK, on);
+		int on = 1;
+		/* libev is non-blocking */
+		sio_setfl(fd, O_NONBLOCK, on);
 
-                /*
+		/*
 		 * SO_KEEPALIVE to ensure connections don't hang
-                 * around for too long when a link goes away
-                 */
-                sio_setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE,
-                               &on, sizeof(on));
-                /*
-                 * Lower latency is more important than higher
-                 * bandwidth, and we usually write entire
-                 * request/response in a single syscall.
-                 */
-                sio_setsockopt(fd, IPPROTO_TCP, TCP_NODELAY,
-                               &on, sizeof(on));
+		 * around for too long when a link goes away
+		 */
+		sio_setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE,
+			       &on, sizeof(on));
+		/*
+		 * Lower latency is more important than higher
+		 * bandwidth, and we usually write entire
+		 * request/response in a single syscall.
+		 */
+		sio_setsockopt(fd, IPPROTO_TCP, TCP_NODELAY,
+			       &on, sizeof(on));
 
 		if (sio_connect(fd, addr, sizeof(*addr)) < 0) {
 			assert(errno == EINPROGRESS);
 			/* Wait until socket is ready for writing. */
 			ev_io_set(coio, fd, EV_WRITE);
 			ev_io_start(coio);
-			fiber_yield();
+			fiber_sleep(FIBER_TIMEOUT_INFINITY);
 			ev_io_stop(coio);
 			fiber_testcancel();
 
@@ -120,7 +122,7 @@ coio_read_ahead(struct ev_io *coio, void *buf, size_t sz, size_t bufsiz)
 			 * Sic: assume the socket is ready: since
 			 * the user called read(), some data must
 			 * be expected.
-		         */
+			 */
 			ssize_t nrd = sio_read(coio->fd, buf, bufsiz);
 			if (nrd > 0) {
 				to_read -= nrd;
@@ -136,7 +138,7 @@ coio_read_ahead(struct ev_io *coio, void *buf, size_t sz, size_t bufsiz)
 				ev_io_set(coio, coio->fd, EV_READ);
 				ev_io_start(coio);
 			}
-			fiber_yield();
+			fiber_sleep(FIBER_TIMEOUT_INFINITY);
 			fiber_testcancel();
 		}
 	} @finally {
@@ -179,7 +181,7 @@ coio_write(struct ev_io *coio, const void *buf, size_t sz)
 			/*
 			 * Sic: write as much data as possible,
 			 * assuming the socket is ready.
-		         */
+			 */
 			ssize_t nwr = sio_write(coio->fd, buf, sz);
 			if (nwr > 0) {
 				/* Go past the data just written. */
@@ -193,7 +195,7 @@ coio_write(struct ev_io *coio, const void *buf, size_t sz)
 				ev_io_start(coio);
 			}
 			/* Yield control to other fibers. */
-			fiber_yield();
+			fiber_sleep(FIBER_TIMEOUT_INFINITY);
 			fiber_testcancel();
 		}
 	} @finally {
@@ -250,7 +252,7 @@ coio_writev(struct ev_io *coio, struct iovec *iov, int iovcnt, size_t size_hint)
 				ev_io_start(coio);
 			}
 			/* Yield control to other fibers. */
-			fiber_yield();
+			fiber_sleep(FIBER_TIMEOUT_INFINITY);
 			fiber_testcancel();
 		}
 	} @finally {
@@ -281,7 +283,7 @@ coio_service_on_accept(struct evio_service *evio_service,
 
 	@try {
 		iobuf = iobuf_create(iobuf_name);
-		f = fiber_create(fiber_name, service->handler);
+		f = fiber_new(fiber_name, service->handler);
 	} @catch (tnt_Exception *e) {
 		say_error("can't create a handler fiber, dropping client connection");
 		evio_close(&coio);
@@ -298,13 +300,14 @@ coio_service_on_accept(struct evio_service *evio_service,
 	 * Start the created fiber. It becomes the coio object owner
 	 * and will have to close it and free before termination.
 	 */
-	fiber_call(f, coio, iobuf, service->handler_param);
+	fiber_resume(f, &COIO_HANDLER_ARGS_TAG,
+		     coio, iobuf, service->handler_param);
 }
 
 void
 coio_service_init(struct coio_service *service, const char *name,
 		  const char *host, int port,
-		  void (*handler)(va_list ap), void *handler_param)
+		  void (*handler)(void), void *handler_param)
 {
 	evio_service_init(&service->evio_service, name, host, port,
 			  coio_service_on_accept, service);

@@ -53,12 +53,8 @@ struct wait_lsn {
 void
 wait_lsn_set(struct wait_lsn *wait_lsn, i64 lsn);
 
-inline static void
-wait_lsn_clear(struct wait_lsn *wait_lsn)
-{
-	wait_lsn->waiter = NULL;
-	wait_lsn->lsn = 0LL;
-}
+void
+wait_lsn_clear(struct wait_lsn *wait_lsn);
 
 struct wal_writer;
 struct wal_watcher;

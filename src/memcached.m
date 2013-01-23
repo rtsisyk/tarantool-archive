@@ -46,8 +46,8 @@
 #include "coio_buf.h"
 
 #define STAT(_)					\
-        _(MEMC_GET, 1)				\
-        _(MEMC_GET_MISS, 2)			\
+	_(MEMC_GET, 1)				\
+	_(MEMC_GET_MISS, 2)			\
 	_(MEMC_GET_HIT, 3)			\
 	_(MEMC_EXPIRED_KEYS, 4)
 
@@ -297,11 +297,25 @@ void memcached_get(struct obuf *out, size_t keys_count, struct tbuf *keys,
 	stats.bytes_written += 5;
 }
 
+static int FLUSH_ALL_ARGS_TAG = 0;
+
 static void
-flush_all(va_list ap)
+flush_all(void)
 {
+	assert(fiber_args_format() == &FLUSH_ALL_ARGS_TAG);
+	va_list ap;
+	fiber_args_start(ap);
 	uintptr_t delay = va_arg(ap, uintptr_t);
-	fiber_sleep(delay - ev_now());
+	fiber_args_end(ap);
+
+	fiber_wakeup(fiber);
+	fiber_yield(NULL);
+
+	ev_tstamp delta = (ev_tstamp) delay - ev_now();
+	if (delta > .0) {
+		fiber_sleep(delta);
+	}
+
 	struct tuple *tuple;
 	struct iterator *it = [memcached_index allocIterator];
 	[memcached_index initIterator: it :ITER_ALL :NULL :0];
@@ -374,10 +388,15 @@ memcached_loop(struct ev_io *coio, struct iobuf *iobuf)
 }
 
 static void
-memcached_handler(va_list ap)
+memcached_handler(void)
 {
+	assert(fiber_args_format() == &COIO_HANDLER_ARGS_TAG);
+	va_list ap;
+	fiber_args_start(ap);
 	struct ev_io coio = va_arg(ap, struct ev_io);
 	struct iobuf *iobuf = va_arg(ap, struct iobuf *);
+	fiber_args_end(ap);
+
 	stats.total_connections++;
 	stats.curr_connections++;
 
@@ -461,8 +480,8 @@ memcached_init(const char *bind_ipaddr, int memcached_port)
 void
 memcached_space_init()
 {
-        if (cfg.memcached_port == 0)
-                return;
+	if (cfg.memcached_port == 0)
+		return;
 
 
 	/* Configure memcached index key. */
@@ -518,13 +537,13 @@ memcached_delete_expired_keys(struct tbuf *keys_to_delete)
 			([memcached_index size] + 1));
 	if (delay > 1)
 		delay = 1;
-	fiber_setcancellable(true);
+	fiber_set_flag(fiber, FIBER_CANCELLABLE);
 	fiber_sleep(delay);
-	fiber_setcancellable(false);
+	fiber_clear_flag(fiber, FIBER_CANCELLABLE);
 }
 
 void
-memcached_expire_loop(va_list ap __attribute__((unused)))
+memcached_expire_loop(void)
 {
 	struct tuple *tuple = NULL;
 
@@ -566,13 +585,13 @@ void memcached_start_expire()
 
 	assert(memcached_expire == NULL);
 	@try {
-		memcached_expire = fiber_create("memcached_expire",
+		memcached_expire = fiber_new("memcached_expire",
 						memcached_expire_loop);
 	} @catch (tnt_Exception *e) {
 		say_error("can't start the expire fiber");
 		return;
 	}
-	fiber_call(memcached_expire);
+	fiber_resume(memcached_expire, NULL);
 }
 
 void memcached_stop_expire()

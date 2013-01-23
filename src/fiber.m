@@ -28,31 +28,25 @@
  */
 #include "fiber.h"
 #include "config.h"
-#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include <say.h>
-#include <tarantool.h>
-#include TARANTOOL_CONFIG
 #include <tbuf.h>
+#include <palloc.h>
 #include <stat.h>
-#include <pickle.h>
 #include <assoc.h>
-#include "iobuf.h"
 #include <rlist.h>
+#include "third_party/queue.h"
+
+const ev_tstamp FIBER_TIMEOUT_INFINITY = 365*86400*100.0;
 
 @implementation FiberCancelException
 @end
 
-
-enum { FIBER_CALL_STACK = 16 };
-
 static struct fiber sched;
 __thread struct fiber *fiber = &sched;
-static __thread struct fiber *call_stack[FIBER_CALL_STACK];
-static __thread struct fiber **sp;
 static __thread uint32_t last_used_fid;
 static __thread struct mh_i32ptr_t *fiber_registry;
 static __thread struct rlist fibers, zombie_fibers, ready_fibers;
@@ -68,68 +62,247 @@ update_last_stack_frame(struct fiber *fiber)
 #endif /* ENABLE_BACKTRACE */
 }
 
+static void
+fiber_zombificate(struct fiber *f);
+
+static void
+fiber_wakeup_next(struct fiber *f);
+
+extern inline struct fiber *
+fiber_self(void);
+
+extern inline uint32_t
+fiber_id(const struct fiber *f);
+
+extern const char *
+fiber_name(const struct fiber *f);
+
+extern inline uint32_t
+fiber_sid(const struct fiber *f);
+
+extern inline void
+fiber_set_sid(struct fiber *f, uint32_t sid);
+
+extern inline enum fiber_state
+fiber_state(const struct fiber *f);
+
+extern inline bool
+fiber_flag(const struct fiber *f, enum fiber_flags flag);
+
+extern inline bool
+fiber_set_flag(struct fiber *f, enum fiber_flags flag);
+
+extern inline bool
+fiber_clear_flag(struct fiber *f, enum fiber_flags flag);
+
+extern inline const void *
+fiber_args_format(void);
+
+extern inline bool
+fiber_has_args(void);
+
+extern inline void
+fiber_args_start(va_list ap);
+
+extern inline void
+fiber_args_end(va_list ap);
+
 void
-fiber_call(struct fiber *callee, ...)
+fiber_change_state(enum fiber_state state)
 {
-	struct fiber *caller = fiber;
-
-	assert(sp - call_stack < FIBER_CALL_STACK);
-	assert(caller);
-
-	fiber = callee;
-	*sp++ = caller;
-
-	update_last_stack_frame(caller);
-
-	callee->csw++;
-
-	fiber->flags &= ~FIBER_READY;
-
-	va_start(fiber->f_data, callee);
-	coro_transfer(&caller->coro.ctx, &callee->coro.ctx);
-	va_end(fiber->f_data);
+#if defined(DEBUG) || defined(FIBER_TRACE_STATE)
+	switch(state) {
+	case FIBER_STARTED:
+		say_debug("start");
+		assert(fiber->state == FIBER_CREATED);
+		break;
+	case FIBER_RESUMED:
+		say_debug("resume");
+		assert(fiber->state == FIBER_PAUSED ||
+		       fiber->state == FIBER_STARTED);
+		break;
+	case FIBER_PAUSED:
+		say_debug("pause");
+		assert(fiber->state == FIBER_RESUMED);
+		break;
+	case FIBER_STOPPED:
+		say_debug("stop");
+		assert(fiber->state == FIBER_PAUSED);
+		break;
+	case FIBER_CREATED:
+	case FIBER_DESTROYED:
+		break;
+	}
+#endif /* defined(DEBUG) || defined(FIBER_TRACE_STATE) */
+	fiber->state = state;
 }
 
+void
+fiber_transfer(struct fiber *callee)
+{
+	struct fiber *caller = fiber;
+	update_last_stack_frame(caller);
+
+	fiber = callee;
+	coro_transfer(&caller->coro.ctx, &fiber->coro.ctx);
+	assert(fiber->fid == caller->fid);
+}
+
+void
+fiber_vresume(struct fiber *callee, const void *args_format, va_list ap)
+{
+	struct fiber *caller = fiber;
+	assert(fiber_state(callee) < FIBER_STOPPED);
+	assert(callee != &sched);
+
+	bool call_from_sched = (caller == &sched);
+
+	if (caller == callee) {
+		say_warn("An attempt to resume yourself has been detected. "
+			 "Please use 'wakeup' instead. ");
+		fiber_cancel(fiber);
+		return;
+	}
+
+	if (callee->caller != &sched && callee->caller != caller) {
+		say_warn("An attempt to resume an attached fiber "
+			 "from a different fiber has been detected: "
+			 "callee %u (%s), origin caller %u (%s), new caller %u (%s). "
+			 "Please detach %u (%s) first and/or use 'wakeup'.",
+			 callee->fid, callee->name,
+			 callee->caller->fid, callee->caller->name,
+			 fiber->fid, fiber->name,
+			 callee->fid, callee->name);
+		fiber_cancel(fiber);
+		return;
+	}
+
+	fiber_change_state(FIBER_PAUSED);
+
+	callee->caller = caller;
+	callee->args_format = args_format;
+	va_copy(callee->args, ap);
+
+	if (!call_from_sched) {
+		/* Transfer to sched */
+		fiber_wakeup_next(callee);
+		fiber_transfer(&sched);
+	} else {
+		/* Transfer directly to callee */
+		fiber_transfer(callee);
+	}
+	va_end(callee->args);
+
+	fiber_change_state(FIBER_RESUMED);
+
+	if (!call_from_sched) {
+		fiber_testcancel();
+	}
+}
+
+void
+fiber_resume(struct fiber *callee, const void *args_format, ...)
+{
+	va_list ap;
+	va_start(ap, args_format);
+	fiber_vresume(callee, args_format, ap);
+	va_end(ap);
+}
+
+void
+fiber_vyield(const void *args_format, va_list ap)
+{
+	struct fiber *caller = fiber;
+	assert(caller != &sched);
+	(void) caller;
+	struct fiber *callee = fiber->caller;
+	assert(callee != NULL);
+
+	fiber_change_state(FIBER_PAUSED);
+
+	callee->args_format = args_format;
+
+	if (callee != &sched) {
+		fiber_wakeup_next(callee);
+	}
+
+	/* Transfer to sched */
+	va_copy(callee->args, ap);
+	fiber_transfer(&sched);
+	va_end(callee->args);
+
+	fiber_change_state(FIBER_RESUMED);
+}
+
+void
+fiber_yield(const void *args_format, ...)
+{
+	va_list ap;
+	va_start(ap, args_format);
+	fiber_vyield(args_format, ap);
+	va_end(ap);
+}
+
+void
+fiber_detach(void)
+{
+	if (fiber->caller == &sched)
+		return;
+
+	fiber_wakeup(fiber->caller);
+	fiber->caller = &sched;
+	fiber->sid = 0;
+	// fiber_sleep(FIBER_TIMEOUT_INFINITY);
+}
 
 /** Interrupt a synchronous wait of a fiber inside the event loop.
  * We do so by keeping an "async" event in every fiber, solely
  * for this purpose, and raising this event here.
  */
 
+void fiber_wakeup2(struct fiber *f, bool head)
+{
+	assert(fiber_state(f) < FIBER_STOPPED);
+	if (f->flags & FIBER_CANCEL) {
+		panic("Attempt to wakeup cancelled fiber: %u (%s)",
+			 f->fid, f->name);
+		return;
+	}
+
+	if (f == &sched)
+		return;
+
+	/* Do not change the position in the ready_fibers list if f
+	 * is already there */
+	if (!rlist_empty(&f->ready_link))
+		return;
+
+	if (rlist_empty(&ready_fibers))
+		ev_async_send(&ready_async);
+
+	if (head) {
+		rlist_move_entry(&ready_fibers, f, ready_link);
+	} else {
+		rlist_move_tail_entry(&ready_fibers, f, ready_link);
+	}
+}
+
+void
+fiber_wakeup_next(struct fiber *f)
+{
+	fiber_wakeup2(f, true);
+}
+
 void
 fiber_wakeup(struct fiber *f)
 {
-	if (f->flags & FIBER_READY)
-		return;
-	f->flags |= FIBER_READY;
-	if (rlist_empty(&ready_fibers))
-		ev_async_send(&ready_async);
-	rlist_move_tail_entry(&ready_fibers, f, state);
+	fiber_wakeup2(f, false);
 }
-
-/** Cancel the subject fiber.
- *
- * Note: this is not guaranteed to succeed, and requires a level
- * of cooperation on behalf of the fiber. A fiber may opt to set
- * FIBER_CANCELLABLE to false, and never test that it was
- * cancelled.  Such fiber can not ever be cancelled, and
- * for such fiber this call will lead to an infinite wait.
- * However, fiber_testcancel() is embedded to the rest of fiber_*
- * API (@sa fiber_yield()), which makes most of the fibers that opt in,
- * cancellable.
- *
- * Currently cancellation can only be synchronous: this call
- * returns only when the subject fiber has terminated.
- *
- * The fiber which is cancelled, has FiberCancelException raised
- * in it. For cancellation to work, this exception type should be
- * re-raised whenever (if) it is caught.
- */
 
 void
 fiber_cancel(struct fiber *f)
 {
-	assert(f->fid != 0);
+	assert(fiber_state(f) != FIBER_DESTROYED);
 	assert(!(f->flags & FIBER_CANCEL));
 
 	f->flags |= FIBER_CANCEL;
@@ -138,91 +311,58 @@ fiber_cancel(struct fiber *f)
 		fiber_testcancel();
 		return;
 	}
-	/*
-	 * The subject fiber is passing through a wait
-	 * point and can be kicked out of it right away.
-	 */
-	if (f->flags & FIBER_CANCELLABLE)
-		fiber_call(f);
 
-	if (f->fid) {
-		/*
-		 * The fiber is not dead. We have no other
-		 * choice but wait for it to discover that
-		 * it has been cancelled, and die.
-		 */
-		assert(f->waiter == NULL);
-		f->waiter = fiber;
-		fiber_yield();
+	if (fiber_state(f) == FIBER_CREATED) {
+		assert(f->caller == &sched);
+		if (f->refs == 0) {
+			fiber_zombificate(f);
+		}
+		return;
 	}
+
 	/*
-	 * Here we can't even check f->fid is 0 since
-	 * f could have already been reused. Knowing
-	 * at least that we can't get scheduled ourselves
-	 * unless asynchronously woken up is somewhat a relief.
-	 */
+	* The subject fiber is passing through a wait
+	* point and can be kicked out of it right away.
+	*/
+
+	struct fiber *caller = f->caller;
+	f->caller = fiber;
+
+	if (f->flags & FIBER_CANCELLABLE) {
+		fiber_change_state(FIBER_PAUSED);
+		fiber_transfer(f);
+		fiber_change_state(FIBER_RESUMED);
+	} else {
+		rlist_del(&fiber->ready_link);
+		fiber_sleep(FIBER_TIMEOUT_INFINITY);
+	}
+
+	if (caller != &sched) {
+		fiber_wakeup(caller);
+	}
+
 	fiber_testcancel(); /* Check if we're ourselves cancelled. */
 }
 
-bool
-fiber_is_cancelled()
-{
-	return fiber->flags & FIBER_CANCEL;
-}
-
-/** Test if this fiber is in a cancellable state and was indeed
- * cancelled, and raise an exception (FiberCancelException) if
- * that's the case.
- */
 void
 fiber_testcancel(void)
 {
-	if (fiber_is_cancelled())
+	if (fiber_flag(fiber, FIBER_CANCEL))
 		tnt_raise(FiberCancelException);
 }
 
-
-
-/** Change the current cancellation state of a fiber. This is not
- * a cancellation point.
- */
-bool
-fiber_setcancellable(bool enable)
-{
-	bool prev = fiber->flags & FIBER_CANCELLABLE;
-	if (enable == true)
-		fiber->flags |= FIBER_CANCELLABLE;
-	else
-		fiber->flags &= ~FIBER_CANCELLABLE;
-	return prev;
-}
-
-/**
- * @note: this is not a cancellation point (@sa fiber_testcancel())
- * but it is considered good practice to call testcancel()
- * after each yield.
- */
-void
-fiber_yield(void)
-{
-	struct fiber *callee = *(--sp);
-	struct fiber *caller = fiber;
-
-	fiber = callee;
-	update_last_stack_frame(caller);
-
-	callee->csw++;
-	coro_transfer(&caller->coro.ctx, &callee->coro.ctx);
-}
-
-
 static void
-fiber_schedule_timeout(ev_watcher *watcher)
+fiber_schedule_timeout(EV_A_ ev_watcher *watcher)
 {
 	assert(fiber == &sched);
 	struct { struct fiber *f; bool timed_out; } *state = watcher->data;
 	state->timed_out = true;
-	fiber_call(state->f);
+
+	fiber_change_state(FIBER_PAUSED);
+	fiber_transfer(state->f);
+	fiber_change_state(FIBER_RESUMED);
+
+	fiber_testcancel();
 }
 
 /**
@@ -230,35 +370,26 @@ fiber_schedule_timeout(ev_watcher *watcher)
  * @return true if timeout exceeded
  */
 bool
-fiber_yield_timeout(ev_tstamp delay)
+fiber_sleep(ev_tstamp delay)
 {
+	assert(fiber != &sched);
+
+	fiber_ref(fiber, 1);
 	struct ev_timer timer;
 	ev_timer_init(&timer, (void *)fiber_schedule_timeout, delay, 0);
 	struct { struct fiber *f; bool timed_out; } state = { fiber, false };
 	timer.data = &state;
 	ev_timer_start(&timer);
-	fiber_yield();
+
+	fiber_change_state(FIBER_PAUSED);
+	fiber_transfer(&sched);
+	fiber_change_state(FIBER_RESUMED);
+
 	ev_timer_stop(&timer);
+	fiber_ref(fiber, -1);
+
+	fiber_testcancel();
 	return state.timed_out;
-}
-
-void
-fiber_yield_to(struct fiber *f)
-{
-	fiber_wakeup(f);
-	fiber_yield();
-	fiber_testcancel();
-}
-
-/**
- * @note: this is a cancellation point (@sa fiber_testcancel())
- */
-
-void
-fiber_sleep(ev_tstamp delay)
-{
-	fiber_yield_timeout(delay);
-	fiber_testcancel();
 }
 
 /** Wait for a forked child to complete.
@@ -266,16 +397,20 @@ fiber_sleep(ev_tstamp delay)
  * @return process return status
 */
 int
-wait_for_child(pid_t pid)
+fiber_wait_for_child(pid_t pid)
 {
+	fiber_ref(fiber, 1);
 	ev_child cw;
 	ev_init(&cw, (void *)fiber_schedule);
 	ev_child_set(&cw, pid, 0);
 	cw.data = fiber;
 	ev_child_start(&cw);
-	fiber_yield();
+	rlist_del_entry(fiber, ready_link);
+	fiber_sleep(FIBER_TIMEOUT_INFINITY);
 	ev_child_stop(&cw);
 	int status = cw.rstatus;
+	fiber_ref(fiber, -1);
+	assert(fiber->state < FIBER_STOPPED);
 	fiber_testcancel();
 	return status;
 }
@@ -284,22 +419,38 @@ void
 fiber_schedule(ev_watcher *watcher, int event __attribute__((unused)))
 {
 	assert(fiber == &sched);
-	fiber_call(watcher->data);
+	struct fiber *callee = watcher->data;
+
+	fiber_change_state(FIBER_PAUSED);
+	fiber_transfer(callee);
+	fiber_testcancel();
+	fiber_change_state(FIBER_RESUMED);
 }
 
 static void
 fiber_ready_async(void)
 {
+#if defined(DEBUG)
+	say_debug("fiber_ready_async:");
+	struct fiber *f;
+	rlist_foreach_entry(f, &ready_fibers, ready_link) {
+		say_debug("  %u %s", f->fid, f->name);
+	}
+#endif /* defined(DEBUG) */
+
 	while(!rlist_empty(&ready_fibers)) {
 		struct fiber *f =
-			rlist_first_entry(&ready_fibers, struct fiber, state);
-		rlist_del_entry(f, state);
-		fiber_call(f);
+			rlist_first_entry(&ready_fibers, struct fiber, ready_link);
+		rlist_del_entry(f, ready_link);
+
+		fiber_change_state(FIBER_PAUSED);
+		fiber_transfer(f);
+		fiber_change_state(FIBER_RESUMED);
 	}
 }
 
 struct fiber *
-fiber_find(int fid)
+fiber_find(uint32_t fid)
 {
 	struct mh_i32ptr_node_t node = { .key = fid };
 	mh_int_t k = mh_i32ptr_get(fiber_registry, &node, NULL, NULL);
@@ -340,28 +491,37 @@ fiber_gc(void)
  */
 
 static void
-fiber_zombificate()
+fiber_zombificate(struct fiber *f)
 {
-	if (fiber->waiter)
-		fiber_wakeup(fiber->waiter);
-	rlist_del(&fiber->state);
-	fiber->waiter = NULL;
-	fiber_set_name(fiber, "zombie");
-	fiber->f = NULL;
-	unregister_fid(fiber);
-	fiber->fid = 0;
-	fiber->flags = 0;
-	prelease(fiber->gc_pool);
-	rlist_move_entry(&zombie_fibers, fiber, link);
+	assert(f->refs == 0);
+	rlist_del(&f->ready_link);
+	f->caller = NULL;
+	fiber_set_name(f, "zombie");
+	f->body = NULL;
+	f->args_format = NULL;
+	memset(&f->args, 0, sizeof(f->args));
+	unregister_fid(f);
+	f->fid = 0;
+	f->sid = 0;
+	f->state = FIBER_DESTROYED;
+	f->flags = 0;
+	f->refs = 0;
+	prelease(f->gc_pool);
+	rlist_move_entry(&zombie_fibers, f, link);
 }
 
 static void
 fiber_loop(void *data __attribute__((unused)))
 {
 	for (;;) {
-		assert(fiber != NULL && fiber->f != NULL && fiber->fid != 0);
+		assert(fiber != NULL && fiber->body != NULL && fiber->fid != 0);
+
+		fiber_ref(fiber, 1);
+
 		@try {
-			fiber->f(fiber->f_data);
+			fiber_change_state(FIBER_STARTED);
+			fiber_change_state(FIBER_RESUMED);
+			fiber->body();
 		} @catch (FiberCancelException *e) {
 			say_info("fiber `%s' has been cancelled", fiber->name);
 			say_info("fiber `%s': exiting", fiber->name);
@@ -372,8 +532,27 @@ fiber_loop(void *data __attribute__((unused)))
 				fiber->name, object_getClassName(e));
 			panic("fiber `%s': exiting", fiber->name);
 		}
-		fiber_zombificate();
-		fiber_yield();	/* give control back to scheduler */
+
+		bool in_cancel = (fiber->flags & FIBER_CANCEL);
+		struct fiber *caller = fiber->caller;
+		assert(caller != NULL);
+
+		fiber_change_state(FIBER_PAUSED);
+		fiber_change_state(FIBER_STOPPED);
+
+		fiber_ref(fiber, -1);
+
+		/* A special case for synchronous fiber_cancel */
+		if (in_cancel) {
+			fiber_transfer(caller);
+			continue;
+		}
+
+		if (caller != &sched) {
+			fiber_wakeup(caller);
+		}
+
+		fiber_transfer(&sched); /* give control back to scheduler */
 	}
 }
 
@@ -391,19 +570,8 @@ fiber_set_name(struct fiber *fiber, const char *name)
 	palloc_set_name(fiber->gc_pool, fiber->name);
 }
 
-/**
- * Create a new fiber.
- *
- * Takes a fiber from fiber cache, if it's not empty.
- * Can fail only if there is not enough memory for
- * the fiber structure or fiber stack.
- *
- * The created fiber automatically returns itself
- * to the fiber cache when its "main" function
- * completes.
- */
 struct fiber *
-fiber_create(const char *name, void (*f) (va_list))
+fiber_new(const char *name, void (*body) (void))
 {
 	struct fiber *fiber = NULL;
 
@@ -419,23 +587,40 @@ fiber_create(const char *name, void (*f) (va_list))
 		fiber->gc_pool = palloc_create_pool("");
 
 		rlist_add_entry(&fibers, fiber, link);
-		rlist_init(&fiber->state);
+		rlist_init(&fiber->ready_link);
 	}
 
 
-	fiber->f = f;
+	fiber->refs = 0;
+	fiber->body = body;
 
 	/* fids from 0 to 100 are reserved */
 	if (++last_used_fid < 100)
 		last_used_fid = 100;
 	fiber->fid = last_used_fid;
 	fiber->sid = 0;
+	fiber->state = FIBER_CREATED;
 	fiber->flags = 0;
-	fiber->waiter = NULL;
+	fiber->caller = &sched;
+	fiber->refs = 0;
 	fiber_set_name(fiber, name);
 	register_fid(fiber);
 
 	return fiber;
+}
+
+void
+fiber_ref(struct fiber *fiber, int count)
+{
+#if 0
+	say_debug("ref (%u %s) %d => %d", fiber->fid, fiber->name,
+		  count, fiber->refs + count);
+#endif
+	assert(fiber->refs + count >= 0);
+	fiber->refs += count;
+
+	if (fiber->refs == 0)
+		fiber_zombificate(fiber);
 }
 
 /**
@@ -452,7 +637,7 @@ fiber_destroy(struct fiber *f)
 	if (strcmp(f->name, "sched") == 0)
 		return;
 
-	rlist_del(&f->state);
+	rlist_del(&f->ready_link);
 	palloc_destroy_pool(f->gc_pool);
 	tarantool_coro_destroy(&f->coro);
 }
@@ -474,7 +659,6 @@ fiber_info_print(struct tbuf *out, struct fiber *fiber)
 	void *stack_top = fiber->coro.stack + fiber->coro.stack_size;
 
 	tbuf_printf(out, "  - fid: %4i" CRLF, fiber->fid);
-	tbuf_printf(out, "    csw: %i" CRLF, fiber->csw);
 	tbuf_printf(out, "    name: %s" CRLF, fiber->name);
 	tbuf_printf(out, "    stack: %p" CRLF, stack_top);
 #ifdef ENABLE_BACKTRACE
@@ -506,15 +690,20 @@ fiber_init(void)
 	fiber_registry = mh_i32ptr_init();
 
 	memset(&sched, 0, sizeof(sched));
-	sched.fid = 1;
+	sched.fid = FIBER_SCHED_FID;
 	sched.gc_pool = palloc_create_pool("");
 	fiber_set_name(&sched, "sched");
 
-	sp = call_stack;
 	fiber = &sched;
 	last_used_fid = 100;
 
-	iobuf_init_readahead(cfg.readahead);
+	sched.caller = &sched;
+	rlist_init(&sched.ready_link);
+	sched.state = FIBER_CREATED;
+	sched.refs = 0;
+	fiber_ref(&sched, 1);
+	fiber_change_state(FIBER_STARTED);
+	fiber_change_state(FIBER_RESUMED);
 
 	ev_async_init(&ready_async, (void *)fiber_ready_async);
 	ev_async_start(&ready_async);
@@ -529,4 +718,6 @@ fiber_free(void)
 		fiber_destroy_all();
 		mh_i32ptr_destroy(fiber_registry);
 	}
+
+	// fiber_ref(&sched, -1);
 }

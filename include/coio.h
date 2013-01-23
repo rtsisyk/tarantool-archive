@@ -38,7 +38,7 @@ struct coio_service
 {
 	struct evio_service evio_service;
 	/* Fiber function. */
-	void (*handler)(va_list ap);
+	void (*handler)(void);
 	/** Passed to the created fiber. */
 	void *handler_param;
 };
@@ -76,6 +76,8 @@ coio_writev(struct ev_io *coio, struct iovec *iov, int iovcnt, size_t size);
 void
 coio_service_init(struct coio_service *service, const char *name,
 		  const char *host, int port,
-		  void (*handler)(va_list ap), void *handler_param);
+		  void (*handler)(void), void *handler_param);
+
+extern int COIO_HANDLER_ARGS_TAG;
 
 #endif /* TARANTOOL_COIO_H_INCLUDED */

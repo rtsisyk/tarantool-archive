@@ -86,10 +86,26 @@ remote_connect(struct ev_io *coio, struct sockaddr_in *remote_addr,
 	say_crit("starting replication from lsn: %" PRIi64, initial_lsn);
 }
 
+static int PULL_FROM_REMOTE_ARGS_TAG = 0;
 static void
-pull_from_remote(va_list ap)
+pull_from_remote(void)
 {
+	assert(fiber_args_format() == &PULL_FROM_REMOTE_ARGS_TAG);
+	va_list ap;
+	fiber_args_start(ap);
 	struct recovery_state *r = va_arg(ap, struct recovery_state *);
+	fiber_args_end(ap);
+
+	/*
+	 * If this method was called from RELOAD CONFIGURATION in the admin
+	 * console the current fiber's caller definitely is not "sched".
+	 * Since there is fiber_yield is not used at all, the caller will not
+	 * get control until this fiber will finish. To deal with this, we
+	 * implicitly detach the fiber from its caller here. Detach set caller
+	 * wake up the caller and then makes this fiber to be child of "sched".
+	 */
+	fiber_detach();
+
 	struct ev_io coio;
 	struct iobuf *iobuf = NULL;
 	bool warning_said = false;
@@ -100,7 +116,7 @@ pull_from_remote(va_list ap)
 	for (;;) {
 		const char *err = NULL;
 		@try {
-			fiber_setcancellable(true);
+			fiber_set_flag(fiber, FIBER_CANCELLABLE);
 			if (! evio_is_connected(&coio)) {
 				if (iobuf == NULL)
 					iobuf = iobuf_create(fiber->name);
@@ -110,7 +126,7 @@ pull_from_remote(va_list ap)
 			}
 			err = "can't read row";
 			struct tbuf row = remote_read_row(&coio, iobuf);
-			fiber_setcancellable(false);
+			fiber_clear_flag(fiber, FIBER_CANCELLABLE);
 			err = NULL;
 
 			r->remote->recovery_lag = ev_now() - header_v11(&row)->tm;
@@ -167,7 +183,7 @@ recovery_follow_remote(struct recovery_state *r, const char *addr)
 	snprintf(name, sizeof(name), "replica/%s", addr);
 
 	@try {
-		f = fiber_create(name, pull_from_remote);
+		f = fiber_new(name, pull_from_remote);
 	} @catch (tnt_Exception *e) {
 		return;
 	}
@@ -189,7 +205,8 @@ recovery_follow_remote(struct recovery_state *r, const char *addr)
 	memcpy(&remote.cookie, &remote.addr, MIN(sizeof(remote.cookie), sizeof(remote.addr)));
 	remote.reader = f;
 	r->remote = &remote;
-	fiber_call(f, r);
+
+	fiber_resume(f, &PULL_FROM_REMOTE_ARGS_TAG, r);
 }
 
 void

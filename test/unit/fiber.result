@@ -1,0 +1,382 @@
+  1/sched: start
+  1/sched: resume
+  1/sched: pause
+101/main: start
+101/main: resume
+	*** test_simple ***
+101/main: pause
+  1/sched: resume
+  1/sched: ev enter loop
+  1/sched: pause
+102/simple: start
+102/simple: resume
+102/simple: HEY!
+102/simple: pause
+102/simple: stop
+  1/sched: resume
+  1/sched: pause
+101/main: resume
+	*** test_simple: done ***
+ 	*** test_add ***
+101/main: ----
+101/main: add(0, 1)
+101/main: pause
+  1/sched: resume
+  1/sched: pause
+103/add: start
+103/add: resume
+103/add: pause
+  1/sched: resume
+  1/sched: pause
+101/main: resume
+101/main: add(0, 1) => 1
+
+101/main: ----
+101/main: add(3, 3)
+101/main: pause
+  1/sched: resume
+  1/sched: pause
+103/add: resume
+103/add: pause
+  1/sched: resume
+  1/sched: pause
+101/main: resume
+101/main: add(3, 3) => 6
+
+101/main: ----
+101/main: add(6, 5)
+101/main: pause
+  1/sched: resume
+  1/sched: pause
+103/add: resume
+103/add: pause
+  1/sched: resume
+  1/sched: pause
+101/main: resume
+101/main: add(6, 5) => 11
+
+101/main: ----
+101/main: add(9, 7)
+101/main: pause
+  1/sched: resume
+  1/sched: pause
+103/add: resume
+103/add: pause
+  1/sched: resume
+  1/sched: pause
+101/main: resume
+101/main: add(9, 7) => 16
+
+101/main: ----
+101/main: add(12, 9)
+101/main: pause
+  1/sched: resume
+  1/sched: pause
+103/add: resume
+103/add: pause
+  1/sched: resume
+  1/sched: pause
+101/main: resume
+101/main: add(12, 9) => 21
+
+101/main: ----
+101/main: add(15, 11)
+101/main: pause
+  1/sched: resume
+  1/sched: pause
+103/add: resume
+103/add: pause
+  1/sched: resume
+  1/sched: pause
+101/main: resume
+101/main: add(15, 11) => 26
+
+101/main: ----
+101/main: add(18, 13)
+101/main: pause
+  1/sched: resume
+  1/sched: pause
+103/add: resume
+103/add: pause
+  1/sched: resume
+  1/sched: pause
+101/main: resume
+101/main: add(18, 13) => 31
+
+101/main: pause
+103/add: resume
+FiberCancelException
+103/add: fiber `add' has been cancelled
+103/add: fiber `add': exiting
+103/add: pause
+103/add: stop
+101/main: resume
+	*** test_add: done ***
+ 	*** test_resume_sleep_yield ***
+101/main: pause
+  1/sched: resume
+  1/sched: pause
+104/sleep_yield: start
+104/sleep_yield: resume
+104/sleep_yield: pause
+  1/sched: resume
+  1/sched: pause
+101/main: resume
+101/main: RESUME
+101/main: pause
+  1/sched: resume
+  1/sched: pause
+104/sleep_yield: resume
+104/sleep_yield: YIELD
+104/sleep_yield: pause
+  1/sched: resume
+  1/sched: pause
+101/main: resume
+101/main: RESUME
+101/main: pause
+  1/sched: resume
+  1/sched: pause
+104/sleep_yield: resume
+104/sleep_yield: pause
+  1/sched: resume
+  1/sched: pause
+105/simple1: start
+105/simple1: resume
+105/simple1: HEY!
+105/simple1: pause
+105/simple1: stop
+  1/sched: resume
+  1/sched: pause
+106/simple2: start
+106/simple2: resume
+106/simple2: HEY!
+106/simple2: pause
+106/simple2: stop
+  1/sched: resume
+  1/sched: pause
+107/simple3: start
+107/simple3: resume
+107/simple3: HEY!
+107/simple3: pause
+107/simple3: stop
+  1/sched: resume
+  1/sched: pause
+104/sleep_yield: resume
+104/sleep_yield: YIELD
+104/sleep_yield: pause
+  1/sched: resume
+  1/sched: pause
+101/main: resume
+101/main: RESUME
+101/main: pause
+104/sleep_yield: resume
+104/sleep_yield: pause
+  1/sched: resume
+  1/sched: pause
+104/sleep_yield: resume
+FiberCancelException
+104/sleep_yield: fiber `sleep_yield' has been cancelled
+104/sleep_yield: fiber `sleep_yield': exiting
+104/sleep_yield: pause
+104/sleep_yield: stop
+101/main: resume
+	*** test_resume_sleep_yield: done ***
+ 	*** test_cancel_sleepy_fast ***
+101/main: pause
+  1/sched: resume
+  1/sched: pause
+108/cancel_sleepy_fast: start
+108/cancel_sleepy_fast: resume
+	*** test_cancel_sleepy_body ***
+108/cancel_sleepy_fast: schedule begin
+108/cancel_sleepy_fast: schedule end
+108/cancel_sleepy_fast: sleep begin
+108/cancel_sleepy_fast: pause
+  1/sched: resume
+  1/sched: pause
+101/main: resume
+	*** test_cancel_sleepy_fast: done ***
+ 	*** test_cancel_sleepy_slow ***
+101/main: pause
+  1/sched: resume
+  1/sched: pause
+111/cancel_sleepy_fast: start
+111/cancel_sleepy_fast: resume
+	*** test_cancel_sleepy_body ***
+111/cancel_sleepy_fast: schedule begin
+111/cancel_sleepy_fast: schedule end
+111/cancel_sleepy_fast: sleep begin
+111/cancel_sleepy_fast: pause
+  1/sched: resume
+  1/sched: pause
+109/sleep: start
+109/sleep: resume
+109/sleep: pause
+  1/sched: resume
+  1/sched: pause
+110/sleep: start
+110/sleep: resume
+110/sleep: pause
+  1/sched: resume
+  1/sched: pause
+112/sleep: start
+112/sleep: resume
+112/sleep: pause
+  1/sched: resume
+  1/sched: pause
+113/sleep: start
+113/sleep: resume
+113/sleep: pause
+  1/sched: resume
+  1/sched: pause
+108/cancel_sleepy_fast: resume
+108/cancel_sleepy_fast: sleep end
+108/cancel_sleepy_fast: cancel begin
+108/cancel_sleepy_fast: pause
+109/sleep: resume
+FiberCancelException
+109/sleep: fiber `sleep' has been cancelled
+109/sleep: fiber `sleep': exiting
+109/sleep: pause
+109/sleep: stop
+108/cancel_sleepy_fast: resume
+108/cancel_sleepy_fast: pause
+110/sleep: resume
+FiberCancelException
+110/sleep: fiber `sleep' has been cancelled
+110/sleep: fiber `sleep': exiting
+110/sleep: pause
+110/sleep: stop
+108/cancel_sleepy_fast: resume
+108/cancel_sleepy_fast: cancel end
+108/cancel_sleepy_fast: pause
+108/cancel_sleepy_fast: stop
+  1/sched: resume
+  1/sched: pause
+111/cancel_sleepy_fast: resume
+111/cancel_sleepy_fast: sleep end
+111/cancel_sleepy_fast: cancel begin
+111/cancel_sleepy_fast: pause
+112/sleep: resume
+FiberCancelException
+112/sleep: fiber `sleep' has been cancelled
+112/sleep: fiber `sleep': exiting
+112/sleep: pause
+112/sleep: stop
+111/cancel_sleepy_fast: resume
+111/cancel_sleepy_fast: pause
+113/sleep: resume
+FiberCancelException
+113/sleep: fiber `sleep' has been cancelled
+113/sleep: fiber `sleep': exiting
+113/sleep: pause
+113/sleep: stop
+111/cancel_sleepy_fast: resume
+111/cancel_sleepy_fast: cancel end
+111/cancel_sleepy_fast: pause
+111/cancel_sleepy_fast: stop
+  1/sched: resume
+  1/sched: pause
+101/main: resume
+	*** test_cancel_sleepy_slow: done ***
+ 	*** test_cancel_created ***
+	*** test_cancel_created: done ***
+ 	*** test_detach ***
+101/main: pause
+  1/sched: resume
+  1/sched: pause
+134/detach: start
+134/detach: resume
+134/detach: DETACH
+134/detach:  // now our caller is sched
+134/detach:  // previous caller is added to queue (last)
+134/detach: YIELD
+134/detach:  // sched will resume fibers in FIFO order: simple1,2,3 -> main
+134/detach: pause
+  1/sched: resume
+  1/sched: pause
+135/simple1: start
+135/simple1: resume
+135/simple1: HEY!
+135/simple1: pause
+135/simple1: stop
+  1/sched: resume
+  1/sched: pause
+136/simple2: start
+136/simple2: resume
+136/simple2: HEY!
+136/simple2: pause
+136/simple2: stop
+  1/sched: resume
+  1/sched: pause
+137/simple3: start
+137/simple3: resume
+137/simple3: HEY!
+137/simple3: pause
+137/simple3: stop
+  1/sched: resume
+  1/sched: pause
+101/main: resume
+101/main: RESUME
+101/main:   // sched woke us up because callee has detached
+	*** test_detach: done ***
+ 101/main: pause
+  1/sched: resume
+  1/sched: pause
+138/resume_self: start
+138/resume_self: resume
+138/resume_self: An attempt to resume yourself has been detected. Please use 'wakeup' instead. 
+FiberCancelException
+138/resume_self: fiber `resume_self' has been cancelled
+138/resume_self: fiber `resume_self': exiting
+138/resume_self: pause
+138/resume_self: stop
+101/main: resume
+101/main: pause
+  1/sched: resume
+  1/sched: pause
+139/loop1: start
+139/loop1: resume
+139/loop1: pause
+  1/sched: resume
+  1/sched: pause
+140/loop2: start
+140/loop2: resume
+140/loop2: An attempt to resume an attached fiber from a different fiber has been detected: callee 139 (loop1), origin caller 101 (main), new caller 140 (loop2). Please detach 139 (loop1) first and/or use 'wakeup'.
+FiberCancelException
+140/loop2: fiber `loop2' has been cancelled
+140/loop2: fiber `loop2': exiting
+140/loop2: pause
+140/loop2: stop
+139/loop1: resume
+139/loop1: pause
+139/loop1: stop
+  1/sched: resume
+  1/sched: pause
+101/main: resume
+	*** test_sleep_timeout ***
+101/main: pause
+  1/sched: resume
+  1/sched: pause
+141/sleep_timeout: start
+141/sleep_timeout: resume
+141/sleep_timeout: pause
+  1/sched: resume
+  1/sched: pause
+101/main: resume
+101/main: pause
+  1/sched: resume
+  1/sched: pause
+141/sleep_timeout: resume
+141/sleep_timeout: is_timeout = 0
+141/sleep_timeout: pause
+141/sleep_timeout: stop
+  1/sched: resume
+  1/sched: pause
+101/main: resume
+	*** test_sleep_timeout: done ***
+ 101/main: pause
+101/main: stop
+  1/sched: resume
+  1/sched: ev exit loop
+  1/sched: EXIT

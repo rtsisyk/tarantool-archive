@@ -33,6 +33,7 @@
 #include <tarantool.h>
 #include <recovery.h>
 #include <fiber.h>
+#include <palloc.h>
 #include "request.h" /* for request_name */
 
 void

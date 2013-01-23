@@ -210,7 +210,7 @@ void *coeio_wait(struct coeio_req *r)
 		return result;
 	}
 	r->wait = true;
-	fiber_yield();
+	fiber_sleep(FIBER_TIMEOUT_INFINITY);
 	void *result = r->result;
 	free(r);
 	fiber_testcancel();

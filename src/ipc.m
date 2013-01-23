@@ -31,8 +31,6 @@
 #include <stdlib.h>
 #include <rlist.h>
 
-const ev_tstamp IPC_TIMEOUT_INFINITY = 365*86400*100.0;
-
 struct ipc_channel {
 	struct rlist readers, writers, bcast;
 	unsigned size;
@@ -81,13 +79,13 @@ ipc_channel_cleanup(struct ipc_channel *ch)
 {
 	while (!rlist_empty(&ch->writers)) {
 		struct fiber *f =
-			rlist_first_entry(&ch->writers, struct fiber, state);
-		rlist_del_entry(f, state);
+			rlist_first_entry(&ch->writers, struct fiber, ready_link);
+		rlist_del_entry(f, ready_link);
 	}
 	while (!rlist_empty(&ch->readers)) {
 		struct fiber *f =
-			rlist_first_entry(&ch->readers, struct fiber, state);
-		rlist_del_entry(f, state);
+			rlist_first_entry(&ch->readers, struct fiber, ready_link);
+		rlist_del_entry(f, ready_link);
 	}
 }
 
@@ -102,27 +100,29 @@ ipc_channel_get_timeout(struct ipc_channel *ch, ev_tstamp timeout)
 
 		/* try to be in FIFO order */
 		if (first_try) {
-			rlist_add_tail_entry(&ch->readers, fiber, state);
+			rlist_add_tail_entry(&ch->readers, fiber, ready_link);
 			first_try = false;
 		} else {
-			rlist_add_entry(&ch->readers, fiber, state);
+			rlist_add_entry(&ch->readers, fiber, ready_link);
 		}
-		bool cancellable = fiber_setcancellable(true);
-		fiber_yield_timeout(timeout);
-		rlist_del_entry(fiber, state);
+
+		@try {
+			fiber_sleep(timeout);
+		} @finally {
+			rlist_del_entry(fiber, ready_link);
+		}
 
 		/* broadcast messsage wakes us up */
 		if (!rlist_empty(&ch->bcast)) {
-			f = rlist_first_entry(&ch->bcast, struct fiber, state);
-			rlist_del_entry(f, state);
+			f = rlist_first_entry(&ch->bcast, struct fiber,
+					      ready_link);
+			rlist_del_entry(f, ready_link);
 			fiber_wakeup(f);
 			fiber_testcancel();
-			fiber_setcancellable(cancellable);
 			return ch->bcast_msg;
 		}
 
 		fiber_testcancel();
-		fiber_setcancellable(cancellable);
 
 		timeout -= ev_now() - started;
 		if (timeout <= 0)
@@ -135,11 +135,10 @@ ipc_channel_get_timeout(struct ipc_channel *ch, ev_tstamp timeout)
 	ch->count--;
 
 	if (!rlist_empty(&ch->writers)) {
-		f = rlist_first_entry(&ch->writers, struct fiber, state);
-		rlist_del_entry(f, state);
+		f = rlist_first_entry(&ch->writers, struct fiber, ready_link);
+		rlist_del_entry(f, ready_link);
 		fiber_wakeup(f);
 	}
-
 
 	return res;
 }
@@ -147,7 +146,7 @@ ipc_channel_get_timeout(struct ipc_channel *ch, ev_tstamp timeout)
 void *
 ipc_channel_get(struct ipc_channel *ch)
 {
-	return ipc_channel_get_timeout(ch, IPC_TIMEOUT_INFINITY);
+	return ipc_channel_get_timeout(ch, FIBER_TIMEOUT_INFINITY);
 }
 
 int
@@ -161,18 +160,17 @@ ipc_channel_put_timeout(struct ipc_channel *ch, void *data,
 
 		/* try to be in FIFO order */
 		if (first_try) {
-			rlist_add_tail_entry(&ch->writers, fiber, state);
+			rlist_add_tail_entry(&ch->writers, fiber, ready_link);
 			first_try = false;
 		} else {
-			rlist_add_entry(&ch->writers, fiber, state);
+			rlist_add_entry(&ch->writers, fiber, ready_link);
 		}
 
-		bool cancellable = fiber_setcancellable(true);
-		fiber_yield_timeout(timeout);
-		rlist_del_entry(fiber, state);
-
-		fiber_testcancel();
-		fiber_setcancellable(cancellable);
+		@try {
+			fiber_sleep(timeout);
+		} @finally {
+			rlist_del_entry(fiber, ready_link);
+		}
 
 		timeout -= ev_now() - started;
 		if (timeout <= 0) {
@@ -190,8 +188,8 @@ ipc_channel_put_timeout(struct ipc_channel *ch, void *data,
 	ch->item[i] = data;
 	if (!rlist_empty(&ch->readers)) {
 		struct fiber *f;
-		f = rlist_first_entry(&ch->readers, struct fiber, state);
-		rlist_del_entry(f, state);
+		f = rlist_first_entry(&ch->readers, struct fiber, ready_link);
+		rlist_del_entry(f, ready_link);
 		fiber_wakeup(f);
 	}
 	return 0;
@@ -200,7 +198,7 @@ ipc_channel_put_timeout(struct ipc_channel *ch, void *data,
 void
 ipc_channel_put(struct ipc_channel *ch, void *data)
 {
-	ipc_channel_put_timeout(ch, data, IPC_TIMEOUT_INFINITY);
+	ipc_channel_put_timeout(ch, data, FIBER_TIMEOUT_INFINITY);
 }
 
 bool
@@ -230,22 +228,25 @@ ipc_channel_broadcast(struct ipc_channel *ch, void *data)
 
 	unsigned readers = 0;
 	struct fiber *f;
-	rlist_foreach_entry(f, &ch->readers, state) {
+	rlist_foreach_entry(f, &ch->readers, ready_link) {
 		readers++;
 	}
 
 	unsigned cnt = 0;
 	while(!rlist_empty(&ch->readers)) {
-		f = rlist_first_entry(&ch->readers, struct fiber, state);
+		f = rlist_first_entry(&ch->readers, struct fiber, ready_link);
 
 		ch->bcast_msg = data;
-		rlist_add_tail_entry(&ch->bcast, fiber, state);
+		rlist_add_tail_entry(&ch->bcast, fiber, ready_link);
+		rlist_del(&f->ready_link);
 		fiber_wakeup(f);
-		bool cancellable = fiber_setcancellable(true);
-		fiber_yield();
-		rlist_del_entry(fiber, state);
-		fiber_testcancel();
-		fiber_setcancellable(cancellable);
+
+		@try {
+			fiber_sleep(FIBER_TIMEOUT_INFINITY);
+		} @finally {
+			rlist_del_entry(fiber, ready_link);
+		}
+
 		/* if any other reader was added don't wake it up */
 		if (++cnt >= readers)
 			break;

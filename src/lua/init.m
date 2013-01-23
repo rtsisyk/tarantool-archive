@@ -79,7 +79,7 @@ tarantool_lua_set_out(struct lua_State *L, const struct tbuf *out)
 }
 
 /**
- * dup out from parent to child L. Used in fiber_create
+ * dup out from parent to child L. Used in fiber_new
  */
 static void
 tarantool_lua_dup_out(struct lua_State *L, struct lua_State *child_L)
@@ -563,7 +563,7 @@ static const struct luaL_reg boxlib[] = {
 
 static const char *fiberlib_name = "box.fiber";
 
-enum fiber_state { DONE, YIELD, DETACH };
+enum lua_fiber_state { DONE, YIELD, DETACH };
 
 /**
  * @pre: stack top contains a table
@@ -621,6 +621,7 @@ lbox_pushfiber(struct lua_State *L, struct fiber *f)
 		/* create a new userdata */
 		void **ptr = lua_newuserdata(L, sizeof(void *));
 		*ptr = f;
+		fiber_ref(fiber, 1);
 		luaL_getmetatable(L, fiberlib_name);
 		lua_setmetatable(L, -2);
 		/* memoize it */
@@ -750,6 +751,7 @@ lbox_fiber_gc(struct lua_State *L)
 	 * on it. lbox_lua_resume() is the only entry point
 	 * to resume an attached fiber.
 	 */
+
 	if (child_L) {
 		assert(f != fiber && child_L != L);
 		/*
@@ -762,8 +764,13 @@ lbox_fiber_gc(struct lua_State *L)
 		 * Cancel and recycle the fiber. This
 		 * returns only after the fiber has died.
 		 */
-		fiber_cancel(f);
+		if (fiber_state(f) < FIBER_STOPPED) {
+			fiber_cancel(f);
+		}
 	}
+
+	fiber_ref(f, -1);
+
 	return 0;
 }
 
@@ -776,20 +783,23 @@ lbox_fiber_detach(struct lua_State *L)
 	if (box_lua_fiber_get_coro(L, fiber) == NULL)
 		luaL_error(L, "fiber.detach(): not attached");
 	struct fiber *caller = box_lua_fiber_get_caller(L);
+	assert(caller != NULL);
+	(void) caller;
 	/* Clear the caller, to avoid a reference leak. */
 	/* Request a detach. */
 	lua_pushinteger(L, DETACH);
 	/* A detached fiber has no associated session. */
 	fiber_set_sid(fiber, 0);
-	fiber_yield_to(caller);
+	fiber_detach();
+	fiber_sleep(FIBER_TIMEOUT_INFINITY);
 	return 0;
 }
 
 static void
-box_lua_fiber_run(va_list ap __attribute__((unused)))
+box_lua_fiber_run(void)
 {
 	fiber_testcancel();
-	fiber_setcancellable(false);
+	//fiber_setcancellable(false);
 
 	struct lua_State *L = box_lua_fiber_get_coro(tarantool_L, fiber);
 	/*
@@ -851,6 +861,7 @@ box_lua_fiber_run(va_list ap __attribute__((unused)))
 		 */
 		luaL_unref(L, LUA_REGISTRYINDEX, coro_ref);
 	}
+
 	/*
 	 * L stack contains nothing but call results.
 	 * If we're still attached, synchronously pass
@@ -859,7 +870,9 @@ box_lua_fiber_run(va_list ap __attribute__((unused)))
 	if (box_lua_fiber_get_coro(L, fiber)) {
 		struct fiber *caller = box_lua_fiber_get_caller(L);
 		lua_pushinteger(L, DONE);
-		fiber_yield_to(caller);
+		// fiber_yield_to(caller);
+		fiber_wakeup(caller);
+		fiber_sleep(FIBER_TIMEOUT_INFINITY);
 	}
 }
 
@@ -868,27 +881,30 @@ static bool
 fiber_checkstack(struct lua_State *L)
 {
 	struct fiber *f = fiber;
-	const int MAX_STACK_DEPTH = 16;
+	const int MAX_STACK_DEPTH = 3;
 	int depth = 1;
 	while ((L = box_lua_fiber_get_coro(L, f)) != NULL) {
 		if (depth++ == MAX_STACK_DEPTH)
 			return true;
 		f = box_lua_fiber_get_caller(L);
 	}
+
 	return false;
 }
 
 
 static int
-lbox_fiber_create(struct lua_State *L)
+lbox_fiber_new(struct lua_State *L)
 {
 	if (lua_gettop(L) != 1 || !lua_isfunction(L, 1))
 		luaL_error(L, "fiber.create(function): bad arguments");
-	if (fiber_checkstack(L))
+	if (fiber_checkstack(L)) {
 		luaL_error(L, "fiber.create(function): recursion limit"
 			   " reached");
+	}
 
-	struct fiber *f = fiber_create("lua", box_lua_fiber_run);
+	struct fiber *f = fiber_new("lua", box_lua_fiber_run);
+	fiber_ref(f, 1);
 	/* Preserve the session in a child fiber. */
 	fiber_set_sid(f, fiber->sid);
 	/* Initially the fiber is cancellable */
@@ -908,7 +924,8 @@ static int
 lbox_fiber_resume(struct lua_State *L)
 {
 	struct fiber *f = lbox_checkfiber(L, 1);
-	if (f->fid == 0)
+	assert(fiber_state(f) < FIBER_DESTROYED);
+	if (fiber_state(f) == FIBER_STOPPED)
 		luaL_error(L, "fiber.resume(): the fiber is dead");
 	struct lua_State *child_L = box_lua_fiber_get_coro(L, f);
 	if (child_L == NULL)
@@ -928,7 +945,7 @@ lbox_fiber_resume(struct lua_State *L)
 	 * of yield in the called fiber: for a yield to work,
 	 * the callee got to be scheduled by 'sched'.
 	 */
-	fiber_yield_to(f);
+	fiber_resume(f, NULL);
 	/*
 	 * The called fiber could have done only 3 things:
 	 * - yielded to us (then we should grab its return)
@@ -940,7 +957,7 @@ lbox_fiber_resume(struct lua_State *L)
 	assert(f->fid == fid);
 	tarantool_lua_set_out(child_L, NULL);
 	/* Find out the state of the child fiber. */
-	enum fiber_state child_state = lua_tointeger(child_L, -1);
+	enum lua_fiber_state child_state = lua_tointeger(child_L, -1);
 	lua_pop(child_L, 1);
 	/* Get the results */
 	nargs = lua_gettop(child_L);
@@ -958,10 +975,11 @@ lbox_fiber_resume(struct lua_State *L)
 			 */
 			fiber_wakeup(f);
 		} else {
-			/* Synchronously reap a dead child. */
-			fiber_call(f);
+			/* Reap a dead child. */
+			fiber_resume(f, NULL);
 		}
 	}
+
 	return nargs;
 }
 
@@ -981,17 +999,19 @@ lbox_fiber_yield(struct lua_State *L)
 	 * Yield to the caller. The caller will take care of
 	 * whatever arguments are taken.
 	 */
-	fiber_setcancellable(true);
+	//fiber_setcancellable(true);
 	if (box_lua_fiber_get_coro(L, fiber) == NULL) {
 		fiber_wakeup(fiber);
-		fiber_yield();
+		fiber_sleep(FIBER_TIMEOUT_INFINITY);
 		fiber_testcancel();
 	} else {
 		struct fiber *caller = box_lua_fiber_get_caller(L);
 		lua_pushinteger(L, YIELD);
-		fiber_yield_to(caller);
+		// fiber_yield_to(caller);
+		fiber_wakeup(caller);
+		fiber_sleep(FIBER_TIMEOUT_INFINITY);
 	}
-	fiber_setcancellable(false);
+	//fiber_setcancellable(false);
 	/*
 	 * Got resumed. Return whatever the caller has passed
 	 * to us with box.fiber.resume().
@@ -1001,6 +1021,7 @@ lbox_fiber_yield(struct lua_State *L)
 	return lua_gettop(L);
 }
 
+#if 0 /* was used in fiber_status */
 static bool
 fiber_is_caller(struct lua_State *L, struct fiber *f) {
 	struct fiber *child = fiber;
@@ -1012,6 +1033,7 @@ fiber_is_caller(struct lua_State *L, struct fiber *f) {
 	}
 	return false;
 }
+#endif
 
 /**
  * Get fiber status.
@@ -1029,22 +1051,24 @@ static int
 lbox_fiber_status(struct lua_State *L)
 {
 	struct fiber *f = lbox_checkfiber(L, 1);
-	const char *status;
-	if (f->fid == 0) {
-		/* This fiber is dead. */
-		status = "dead";
-	} else if (f == fiber) {
-		/* The fiber is the current running fiber. */
-		status = "running";
-	} else if (fiber_is_caller(L, f)) {
-		/* The fiber is current fiber's caller. */
-		status = "normal";
-	} else {
-		/* None of the above: must be suspended. */
-		status = "suspended";
+	switch (fiber_state(f)) {
+	case FIBER_RESUMED:
+		lua_pushstring(L, "running");
+		return 1;
+	case FIBER_STOPPED:
+	case FIBER_DESTROYED:
+		lua_pushstring(L, "dead");
+		return 1;
+	case FIBER_CREATED:
+	case FIBER_PAUSED:
+		lua_pushstring(L, "suspended");
+		return 1;
+	case FIBER_STARTED:
+		assert(false);
+		return 0;
 	}
-	lua_pushstring(L, status);
-	return 1;
+
+	return 0;
 }
 
 /** Get or set fiber name.
@@ -1084,9 +1108,9 @@ lbox_fiber_sleep(struct lua_State *L)
 	if (! lua_isnumber(L, 1) || lua_gettop(L) != 1)
 		luaL_error(L, "fiber.sleep(delay): bad arguments");
 	double delay = lua_tonumber(L, 1);
-	fiber_setcancellable(true);
+	//fiber_setcancellable(true);
 	fiber_sleep(delay);
-	fiber_setcancellable(false);
+	//fiber_setcancellable(false);
 	return 0;
 }
 
@@ -1102,10 +1126,12 @@ lbox_fiber_find(struct lua_State *L)
 {
 	int fid = lua_tointeger(L, -1);
 	struct fiber *f = fiber_find(fid);
-	if (f)
+	if (f) {
 		lbox_pushfiber(L, f);
-	else
+	}
+	else {
 		lua_pushnil(L);
+	}
 	return 1;
 }
 
@@ -1152,7 +1178,7 @@ static const struct luaL_reg fiberlib[] = {
 	{"find", lbox_fiber_find},
 	{"cancel", lbox_fiber_cancel},
 	{"testcancel", lbox_fiber_testcancel},
-	{"create", lbox_fiber_create},
+	{"create", lbox_fiber_new},
 	{"resume", lbox_fiber_resume},
 	{"yield", lbox_fiber_yield},
 	{"status", lbox_fiber_status},
@@ -1376,6 +1402,7 @@ tarantool_lua_init()
 	return L;
 }
 
+
 void
 tarantool_lua_close(struct lua_State *L)
 {
@@ -1529,9 +1556,14 @@ tarantool_lua_load_cfg(struct lua_State *L, struct tarantool_cfg *cfg)
  * Load start-up file routine.
  */
 static void
-load_init_script(va_list ap)
+load_init_script(void)
 {
+	assert(fiber_args_format() == load_init_script);
+
+	va_list ap;
+	fiber_args_start(ap);
 	struct lua_State *L = va_arg(ap, struct lua_State *);
+	fiber_args_end(ap);
 
 	char path[PATH_MAX + 1];
 	snprintf(path, PATH_MAX, "%s/%s",
@@ -1587,9 +1619,9 @@ tarantool_lua_load_init_script(struct lua_State *L)
 	 * To work this problem around we must run init script in
 	 * a separate fiber.
 	 */
-	struct fiber *loader = fiber_create(TARANTOOL_LUA_INIT_SCRIPT,
+	struct fiber *loader = fiber_new(TARANTOOL_LUA_INIT_SCRIPT,
 					    load_init_script);
-	fiber_call(loader, L);
+	fiber_resume(loader, &load_init_script, L);
 	/* Outside the startup file require() or ffi are not
 	 * allowed.
 	*/

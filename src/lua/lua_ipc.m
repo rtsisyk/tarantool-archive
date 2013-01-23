@@ -37,6 +37,8 @@
 #include "ipc.h"
 #include "lua/init.h"
 
+#include <fiber.h>
+
 static const char channel_lib[]   = "box.ipc.channel";
 
 /******************** channel ***************************/
@@ -117,7 +119,7 @@ lbox_ipc_channel_put(struct lua_State *L)
 
 	switch (top) {
 	case 2:
-		timeout = IPC_TIMEOUT_INFINITY;
+		timeout = FIBER_TIMEOUT_INFINITY;
 		break;
 	case 3:
 		if (!lua_isnumber(L, -1))
@@ -175,7 +177,7 @@ lbox_ipc_channel_get(struct lua_State *L)
 		if (timeout < 0)
 			luaL_error(L, "wrong timeout");
 	} else {
-		timeout = IPC_TIMEOUT_INFINITY;
+		timeout = FIBER_TIMEOUT_INFINITY;
 	}
 
 	struct ipc_channel *ch = lbox_check_channel(L, 1);

@@ -29,6 +29,7 @@
 #include "box_lua.h"
 #include "lua/init.h"
 #include <fiber.h>
+#include <palloc.h>
 #include "box/box.h"
 #include "request.h"
 #include "txn.h"
