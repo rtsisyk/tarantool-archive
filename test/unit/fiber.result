@@ -375,6 +375,31 @@ FiberCancelException
   1/sched: pause
 101/main: resume
 	*** test_sleep_timeout: done ***
+ 	*** test_hooks ***
+101/main: pause
+  1/sched: resume
+  1/sched: pause
+142/hooks: start
+142/hooks: hook start
+142/hooks: resume
+142/hooks: hook resume
+142/hooks: pause
+142/hooks: hook pause
+  1/sched: resume
+  1/sched: pause
+101/main: resume
+101/main: pause
+142/hooks: resume
+142/hooks: hook resume
+FiberCancelException
+142/hooks: fiber `hooks' has been cancelled
+142/hooks: fiber `hooks': exiting
+142/hooks: pause
+142/hooks: hook pause
+142/hooks: stop
+142/hooks: hook stop
+101/main: resume
+	*** test_hooks: done ***
  101/main: pause
 101/main: stop
   1/sched: resume

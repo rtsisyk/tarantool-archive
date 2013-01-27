@@ -135,6 +135,14 @@ fiber_change_state(enum fiber_state state)
 	}
 #endif /* defined(DEBUG) || defined(FIBER_TRACE_STATE) */
 	fiber->state = state;
+
+	if (state < FIBER_STARTED || state > FIBER_DESTROYED)
+		return;
+
+	size_t hook = state - FIBER_CREATED - 1;
+	for (size_t i = 0; i < fiber->hook_sizes[hook]; i++) {
+		fiber->hooks[hook][i]();
+	}
 }
 
 void
@@ -537,8 +545,13 @@ fiber_loop(void *data __attribute__((unused)))
 		struct fiber *caller = fiber->caller;
 		assert(caller != NULL);
 
-		fiber_change_state(FIBER_PAUSED);
-		fiber_change_state(FIBER_STOPPED);
+		@try {
+			fiber_change_state(FIBER_PAUSED);
+			fiber_change_state(FIBER_STOPPED);
+		} @catch(id) {
+			/* Ignore exceptions from hooks when a fiber
+			 * is stopping */
+		}
 
 		fiber_ref(fiber, -1);
 
@@ -603,6 +616,8 @@ fiber_new(const char *name, void (*body) (void))
 	fiber->flags = 0;
 	fiber->caller = &sched;
 	fiber->refs = 0;
+	memset(fiber->hook_sizes, 0, sizeof(fiber->hook_sizes));
+	memset(fiber->hooks, 0, sizeof(fiber->hooks));
 	fiber_set_name(fiber, name);
 	register_fid(fiber);
 
@@ -652,6 +667,40 @@ fiber_destroy_all()
 		fiber_destroy(f);
 }
 
+int
+fiber_add_hook(struct fiber *f, enum fiber_state state, fiber_hook_cb_t cb)
+{
+	assert(state > FIBER_CREATED && state < FIBER_DESTROYED);
+
+	size_t hook = state - FIBER_CREATED - 1;
+
+	if (unlikely(f->hook_sizes[hook] >= FIBER_HOOKS_MAX))
+		return ENOMEM;
+
+	f->hooks[hook][f->hook_sizes[hook]] = cb;
+	f->hook_sizes[hook]++;
+
+	return 0;
+}
+
+int
+fiber_remove_hook(struct fiber *f, enum fiber_state state, fiber_hook_cb_t cb)
+{
+	assert(state > FIBER_CREATED && state < FIBER_DESTROYED);
+
+	size_t hook = state - FIBER_CREATED - 1;
+	for (size_t i = 0; i < f->hook_sizes[hook]; i++) {
+		if (f->hooks[hook][i] != cb)
+			continue;
+
+		memmove(f->hooks[hook] + i, f->hooks[hook] + i + 1,
+			sizeof(*f->hooks[hook]) * (FIBER_HOOKS_MAX - i - 1));
+		f->hook_sizes[hook]--;
+		return 0;
+	}
+
+	return EINVAL;
+}
 
 static void
 fiber_info_print(struct tbuf *out, struct fiber *fiber)

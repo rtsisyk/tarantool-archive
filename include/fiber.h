@@ -50,7 +50,8 @@ enum {
 	/** Maximum length of the fiber name */
 	FIBER_NAME_MAXLEN = 32,
 	/** fid of the scheduler **/
-	FIBER_SCHED_FID = 1
+	FIBER_SCHED_FID = 1,
+	FIBER_HOOKS_MAX = 8
 };
 
 /**
@@ -95,6 +96,8 @@ enum fiber_flags {
 @interface FiberCancelException: tnt_Exception
 @end
 
+typedef void (*fiber_hook_cb_t)(void);
+
 struct palloc_pool;
 
 /**
@@ -137,6 +140,11 @@ struct fiber {
 
 	/** Reference counter */
 	uint16_t refs;
+
+	/** Hooks **/
+	fiber_hook_cb_t hooks[FIBER_STOPPED - FIBER_STARTED + 1][FIBER_HOOKS_MAX];
+	size_t hook_sizes[FIBER_STOPPED - FIBER_STARTED + 1];
+
 	/** @endcond **/
 };
 
@@ -602,6 +610,31 @@ fiber_cancel(struct fiber *f);
  * This method does not transfers control. This is a cancellation point.
  */
 void fiber_testcancel(void);
+
+typedef void (*fiber_hook_t)(void);
+
+/**
+ * @brief Add hook procedure @a cb that executed each time when fiber @a
+ * changes its state to @a state.
+ * @param f fiber
+ * @param state a new state to hook (FIBER_START <= state <= FIBER_STOPPED)
+ * @param cb callback procedure
+ * @retval 0 on success
+ * @retval ENOMEM insufficient memory exists to add the hook
+ */
+int
+fiber_add_hook(struct fiber *f, enum fiber_state state, fiber_hook_t cb);
+
+/**
+ * @brief Removes hook procedure @a cb from fiber @f
+ * @param f fiber
+ * @param state a new state to hook (FIBER_START <= state <= FIBER_STOPPED)
+ * @param cb callback procedure
+ * @retval EINVAL hook (@a state, @a cb) is not found
+ */
+int
+fiber_remove_hook(struct fiber *f, enum fiber_state state, fiber_hook_t cb);
+
 
 struct tbuf;
 void fiber_info(struct tbuf *out);

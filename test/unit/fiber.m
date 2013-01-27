@@ -333,6 +333,53 @@ test_sleep_timeout(void)
 	footer();
 }
 
+static void
+hook_start()
+{
+	say_info("hook start");
+}
+
+static void
+hook_resume()
+{
+	say_info("hook resume");
+}
+
+static void
+hook_pause()
+{
+	say_info("hook pause");
+}
+
+static void
+hook_stop()
+{
+	say_info("hook stop");
+}
+
+/*
+ * test_sleep_timeout
+ */
+static void
+test_hooks(void)
+{
+	header();
+
+	struct fiber *f = fiber_new("hooks", sleep_body);
+	fiber_set_flag(f, FIBER_CANCELLABLE);
+
+	fiber_add_hook(f, FIBER_STARTED, hook_start);
+	fiber_add_hook(f, FIBER_RESUMED, hook_resume);
+	fiber_add_hook(f, FIBER_PAUSED,  hook_pause);
+	fiber_add_hook(f, FIBER_STOPPED, hook_stop);
+
+	fiber_wakeup(f);
+	fiber_sleep(0.5);
+	fiber_cancel(f);
+
+	footer();
+}
+
 void
 run(void)
 {
@@ -346,6 +393,7 @@ run(void)
 	test_resume_self();
 	test_resume_loop();
 	test_sleep_timeout();
+	test_hooks();
 }
 
 
