@@ -30,8 +30,11 @@ macro(libobjc_build)
     if (HAVE_NON_C99_PTHREAD_H)
         set (extra_cflags "${extra_cflags} -fgnu89-inline")
     endif()
+    # Makefile actually ignores EXTRA_LDFLAGS. Append these flags into LD variable.
+    set (libobjc_ld "${CMAKE_C_COMPILER} -nostdlib ${extra_ldflags}")
     separate_arguments(extra_cflags)
     separate_arguments(extra_ldflags)
+    separate_arguments(libobjc_ld)
     if (NOT (${PROJECT_BINARY_DIR} STREQUAL ${PROJECT_SOURCE_DIR}))
         add_custom_command(OUTPUT ${PROJECT_BINARY_DIR}/third_party/libobjc
             COMMAND mkdir -p ${PROJECT_BINARY_DIR}/third_party/libobjc
@@ -42,7 +45,7 @@ macro(libobjc_build)
     add_custom_command(OUTPUT ${PROJECT_BINARY_DIR}/third_party/libobjc/libobjc.a
         WORKING_DIRECTORY ${PROJECT_BINARY_DIR}/third_party/libobjc
         COMMAND $(MAKE) clean
-        COMMAND $(MAKE) CC=${CMAKE_C_COMPILER} CXX=${CMAKE_CXX_COMPILER} EXTRA_CFLAGS="${extra_cflags}" EXTRA_LDFLAGS="${extra_ldflags}"
+        COMMAND $(MAKE) CC=${CMAKE_C_COMPILER} CXX=${CMAKE_CXX_COMPILER} LD="${libobjc_ld}" EXTRA_CFLAGS="${extra_cflags}" EXTRA_LDFLAGS="${extra_ldflags}"
         DEPENDS ${PROJECT_BINARY_DIR}/third_party/libobjc
                 ${PROJECT_BINARY_DIR}/CMakeCache.txt
     )
