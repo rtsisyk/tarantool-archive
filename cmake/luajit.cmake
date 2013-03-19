@@ -139,20 +139,33 @@ macro(luajit_build)
         set (luajit_copt ${luajit_copt} -O2)
     endif()
     set (luajit_copt ${luajit_copt} -I${PROJECT_SOURCE_DIR}/libobjc)
-    set (luajit_cc ${CMAKE_C_COMPILER})
-    if (NOT luajit_cc)
-        message (FATAL_ERROR "LuaJIT will not compile with default C compiler (cc)")
+    set (luajit_target_cc ${CMAKE_C_COMPILER})
+    if (${CMAKE_SYSTEM_PROCESSOR} STREQUAL ${CMAKE_HOST_SYSTEM_PROCESSOR})
+        # Regular mode - use CMake compiler.
+        set (luajit_host_cc ${CMAKE_C_COMPILER})
+    else()
+        # Crosscompile mode - use a host CC compiler.
+        # Since CMake does not support cross compilation properly
+        # we have to use to "cc" here.
+        set (luajit_host_cc "cc")
+        if (${CMAKE_HOST_SYSTEM_PROCESSOR} STREQUAL "x86_64" AND ${CMAKE_SYSTEM_PROCESSOR} STREQUAL "arm")
+            # A special case for luajit's buildvm - the host compiler
+            # must have same pointer size as the target compiler.
+            set (luajit_host_cc "cc -m32")
+        endif()
     endif()
     set(luajit_ldflags "${CMAKE_SHARED_LINKER_FLAGS}")
     separate_arguments(luajit_copt)
     separate_arguments(luajit_ldflags)
-    set (luajit_buildoptions ${luajit_buildoptions} CC="${luajit_cc}" TARGET_CC="${luajit_cc}" CCOPT="${luajit_copt}")
+    separate_arguments(luajit_host_cc)
+    separate_arguments(luajit_target_cc)
+    set (luajit_buildoptions ${luajit_buildoptions} HOST_CC="${luajit_host_cc}" TARGET_CC="${luajit_target_cc}" CCOPT="${luajit_copt}")
     set (luajit_buildoptions ${luajit_buildoptions} Q='' LDFLAGS="${luajit_ldflags}")
     if (${PROJECT_BINARY_DIR} STREQUAL ${PROJECT_SOURCE_DIR})
         add_custom_command(OUTPUT ${PROJECT_BINARY_DIR}/third_party/luajit/src/libluajit.a
             WORKING_DIRECTORY ${PROJECT_BINARY_DIR}/third_party/luajit
             COMMAND $(MAKE) clean
-            COMMAND $(MAKE) -C src ${luajit_buildoptions}
+            COMMAND $(MAKE) -C src ${luajit_buildoptions} libluajit.a
             DEPENDS ${CMAKE_SOURCE_DIR}/CMakeCache.txt
         )
     else()
@@ -163,7 +176,7 @@ macro(luajit_build)
             WORKING_DIRECTORY ${PROJECT_BINARY_DIR}/third_party/luajit
             COMMAND cp -r ${PROJECT_SOURCE_DIR}/third_party/luajit/* .
             COMMAND $(MAKE) clean
-            COMMAND $(MAKE) -C src ${luajit_buildoptions}
+            COMMAND $(MAKE) -C src ${luajit_buildoptions} libluajit.a
             DEPENDS ${PROJECT_BINARY_DIR}/CMakeCache.txt ${PROJECT_BINARY_DIR}/third_party/luajit
         )
     endif()
