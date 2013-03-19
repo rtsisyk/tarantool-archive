@@ -6,13 +6,12 @@ function(lua_source filename)
     get_filename_component(module ${filename} NAME_WE)
     ADD_CUSTOM_COMMAND(OUTPUT ${CMAKE_BINARY_DIR}/src/box/${filename}.c
         COMMAND ${ECHO} 'const char ${module}_lua[] =' > ${filename}.new.c
-        COMMAND ${CMAKE_BINARY_DIR}/extra/txt2c
+        COMMAND ${CMAKE_BINARY_DIR}/extra/txt2c.sh <
             ${CMAKE_SOURCE_DIR}/src/box/${filename} >> ${filename}.new.c
         COMMAND ${ECHO} '\;' >> ${filename}.new.c
         COMMAND ${CMAKE_COMMAND} -E copy_if_different ${filename}.new.c
             ${CMAKE_BINARY_DIR}/src/box/${filename}.c
-        COMMAND ${CMAKE_COMMAND} -E remove ${filename}.new.c
-        DEPENDS ${CMAKE_SOURCE_DIR}/src/box/${filename} txt2c)
+        COMMAND ${CMAKE_COMMAND} -E remove ${filename}.new.c)
 
     set(lua_sources ${lua_sources} ${CMAKE_BINARY_DIR}/src/box/${filename}.c
         PARENT_SCOPE)
