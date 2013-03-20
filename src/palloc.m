@@ -255,7 +255,7 @@ palloc_slow_path(struct palloc_pool *restrict pool, size_t size)
 	return ptr;
 }
 
-void *__attribute((regparm(2)))
+void *
 palloc(struct palloc_pool *restrict pool, size_t size)
 {
 	const size_t rz_size = size + PALLOC_REDZONE * 2;
@@ -277,7 +277,7 @@ palloc(struct palloc_pool *restrict pool, size_t size)
 	return ptr + PALLOC_REDZONE;
 }
 
-void *__attribute__((regparm(2)))
+void *
 p0alloc(struct palloc_pool *pool, size_t size)
 {
 	void *ptr;
