@@ -7,6 +7,7 @@ file(MAKE_DIRECTORY ${CMAKE_BINARY_DIR}/src/box/lua)
 set(lua_sources)
 lua_source(lua_sources lua/box.lua)
 lua_source(lua_sources lua/box_net.lua)
+lua_source(lua_sources lua/box_request.lua)
 lua_source(lua_sources lua/misc.lua)
 lua_source(lua_sources lua/sql.lua)
 

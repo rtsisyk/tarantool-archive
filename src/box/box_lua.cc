@@ -52,8 +52,9 @@ extern "C" {
 #include "scoped_guard.h"
 
 /* contents of box.lua, misc.lua, box.net.lua respectively */
-extern char box_lua[], box_net_lua[], misc_lua[], sql_lua[];
-static const char *lua_sources[] = { box_lua, box_net_lua, misc_lua, sql_lua, NULL };
+extern char box_lua[], box_net_lua[], box_request_lua[], misc_lua[], sql_lua[];
+static const char *lua_sources[] = { box_lua, box_net_lua, box_request_lua,
+                                     misc_lua, sql_lua, NULL };
 
 /**
  * All box connections share the same Lua state. We use
@@ -963,6 +964,86 @@ static const struct luaL_reg lbox_iterator_meta[] = {
 
 /* }}} */
 
+/** {{{ box.request Lua library
+ *
+ * box.request library implemented using LuaJIT FFI.
+ * Here are only auxiliary wrappers to work with box.request CDATA objects
+ * using Lua stack. These wrappers are only needed for old non-FFI code.
+ */
+
+/** C Type Indetifiers used by FFI */
+static CTypeID CTID_STRUCT_REQUEST;
+static CTypeID CTID_STRUCT_REQUEST_PTR;
+static CTypeID CTID_STRUCT_REQUEST_REF;
+static CTypeID CTID_CONST_STRUCT_REQUEST;
+static CTypeID CTID_CONST_STRUCT_REQUEST_PTR;
+static CTypeID CTID_CONST_STRUCT_REQUEST_REF;
+
+/**
+ * @brief Initialiize CTID_*REQUEST* values
+ * @param L Lua State
+ */
+static void
+box_lua_request_init(struct lua_State *L)
+{
+	CTID_STRUCT_REQUEST = tarantool_lua_ctypeid(L, "struct request");
+	CTID_STRUCT_REQUEST_PTR = tarantool_lua_ctypeid(L, "struct request *");
+	CTID_STRUCT_REQUEST_REF = tarantool_lua_ctypeid(L, "struct request &");
+	CTID_CONST_STRUCT_REQUEST = tarantool_lua_ctypeid(L,
+		"const struct request");
+	CTID_CONST_STRUCT_REQUEST_PTR = tarantool_lua_ctypeid(L,
+		"const struct request *");
+	CTID_CONST_STRUCT_REQUEST_REF = tarantool_lua_ctypeid(L,
+		"const struct request &");
+}
+
+/**
+ * @brief Check that the value at the given acceptable index is a request
+ * All variances of 'struct request' type are supported: a struct itself,
+ * a pointer to struct, a reference and all listed + const modifier.
+ * @param L Lua State
+ * @param idx stack index
+ * @return request
+ */
+__attribute__((unused))
+static const struct request *
+lbox_checkrequest(struct lua_State *L, int idx)
+{
+	uint32_t ctypeid;
+	void *cdata = luaL_checkcdata(L, idx, &ctypeid, "struct request");
+	if (ctypeid == CTID_STRUCT_REQUEST ||
+	    ctypeid == CTID_CONST_STRUCT_REQUEST) {
+		return (const struct request *) cdata;
+	} else if (ctypeid == CTID_CONST_STRUCT_REQUEST_REF ||
+		   ctypeid == CTID_CONST_STRUCT_REQUEST_PTR ||
+		   ctypeid == CTID_STRUCT_REQUEST_REF ||
+		   ctypeid == CTID_STRUCT_REQUEST_PTR) {
+		return *(const struct request **) cdata;
+	} else {
+		luaL_error(L, "expected 'struct request' as %d argument", idx);
+		return NULL;
+	}
+}
+
+/**
+ * @brief Push a struct request onto the stack
+ * @note Request always pushed as 'const struct request&'.
+ * It means that GC can a clean the reference at any time, but struct request
+ * itself is not garbage collected.
+ * @param L Lua State
+ * @param request request to push
+ */
+__attribute__((unused))
+static void
+lbox_pushrequest(struct lua_State *L, const struct request *request)
+{
+	void *cdata = luaL_pushcdata(L, CTID_CONST_STRUCT_REQUEST_REF,
+				     sizeof(request));
+	*(const struct request **) cdata = request;
+}
+
+/* }}} */
+
 /** {{{ Lua I/O: facilities to intercept box output
  * and push into Lua stack.
  */
@@ -1764,6 +1845,9 @@ mod_lua_init(struct lua_State *L)
 			panic("Error loading Lua source %.160s...: %s",
 			      *s, lua_tostring(L, -1));
 	}
+
+	/* Must be initialized after box_request.lua */
+	box_lua_request_init(L);
 
 	assert(lua_gettop(L) == 0);
 
