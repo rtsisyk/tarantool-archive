@@ -137,15 +137,13 @@ tarantool_lua_tointeger64(struct lua_State *L, int idx)
 	}
 	case LUA_TCDATA:
 	{
-		/* Calculate absolute value in the stack. */
-		if (idx < 0)
-			idx = lua_gettop(L) + idx + 1;
-		GCcdata *cd = cdataV(L->base + idx - 1);
-		if (cd->ctypeid != CTID_INT64 && cd->ctypeid != CTID_UINT64) {
+		uint32_t ctypeid = 0;
+		void *cdata = luaL_checkcdata(L, idx, &ctypeid, "uint64_t");
+		if (ctypeid != CTID_INT64 && ctypeid != CTID_UINT64) {
 			luaL_error(L,
 				   "lua_tointeger64: unsupported cdata type");
 		}
-		result = *(uint64_t*)cdataptr(cd);
+		result = *(uint64_t*)cdata;
 		break;
 	}
 	default:
@@ -156,26 +154,87 @@ tarantool_lua_tointeger64(struct lua_State *L, int idx)
 	return result;
 }
 
-static GCcdata*
-luaL_pushcdata(struct lua_State *L, CTypeID id, int bits)
+uint32_t
+tarantool_lua_ctypeid(struct lua_State *L, const char *ctypename)
 {
+	int idx = lua_gettop(L);
+	CTypeID ctypeid;
+	GCcdata *cd;
+
+	/* Get ref to ffi.typeof */
+	luaL_loadstring(L, "return require('ffi').typeof");
+	/* lua_call must be wrapped by try .. catch */
+	try {
+		lua_call(L, 0, 1);
+		if (lua_gettop(L) > 1 || !lua_isfunction(L, 1))
+			goto fail;
+		/* Push the first argument to ffi.typeof */
+		lua_pushstring(L, ctypename);
+		/* Call ffi.typeof() */
+		lua_call(L, 1, 1);
+	} catch(...) {
+		goto fail;
+	}
+	/* Returned type should be LUA_TCDATA with CTID_CTYPEID */
+	if (lua_type(L, 1) != LUA_TCDATA)
+		goto fail;
+	cd = cdataV(L->base);
+	if (cd->ctypeid != CTID_CTYPEID)
+		goto fail;
+
+	ctypeid = *(CTypeID *)cdataptr(cd);
+	lua_settop(L, idx);
+	return ctypeid;
+fail:
+	lua_settop(L, idx);
+	panic("lua call to ffi.typeof('%s') failed", ctypename);
+}
+
+void *
+luaL_pushcdata(struct lua_State *L, uint32_t ctypeid, uint32_t size)
+{
+	/*
+	 * ctypeid is actually has CTypeID type.
+	 * CTypeId is defined somewhere inside luajit's internal headers
+	 * which should not be included in init.h header.
+	 */
+	static_assert(sizeof(ctypeid) == sizeof(CTypeID),
+		      "sizeof(ctypeid) == sizeof(CTypeID)");
 	CTState *cts = ctype_cts(L);
-	CType *ct = ctype_raw(cts, id);
+	CType *ct = ctype_raw(cts, ctypeid);
 	CTSize sz;
-	lj_ctype_info(cts, id, &sz);
-	GCcdata *cd = lj_cdata_new(cts, id, bits);
+	lj_ctype_info(cts, ctypeid, &sz);
+	GCcdata *cd = lj_cdata_new(cts, ctypeid, size);
 	TValue *o = L->top;
 	setcdataV(L, o, cd);
 	lj_cconv_ct_init(cts, ct, sz, (uint8_t *) cdataptr(cd), o, 0);
 	incr_top(L);
-	return cd;
+	return cdataptr(cd);
+}
+
+void *
+luaL_checkcdata(struct lua_State *L, int idx, uint32_t *ctypeid,
+		const char *ctypename)
+{
+	/* Calculate absolute value in the stack. */
+	if (idx < 0)
+		idx = lua_gettop(L) + idx + 1;
+
+	if (lua_type(L, idx) != LUA_TCDATA) {
+		luaL_error(L, "expected '%s' as %d argument", ctypename, idx);
+		return NULL;
+	}
+
+	GCcdata *cd = cdataV(L->base + idx - 1);
+	*ctypeid = cd->ctypeid;
+	return (void *)cdataptr(cd);
 }
 
 int
 luaL_pushnumber64(struct lua_State *L, uint64_t val)
 {
-	GCcdata *cd = luaL_pushcdata(L, CTID_UINT64, 8);
-	*(uint64_t*)cdataptr(cd) = val;
+	void *cdata = luaL_pushcdata(L, CTID_UINT64, sizeof(uint64_t));
+	*(uint64_t*) cdata = val;
 	return 1;
 }
 
@@ -1082,8 +1141,6 @@ lbox_tonumber64(struct lua_State *L)
 	uint64_t result = tarantool_lua_tointeger64(L, 1);
 	return luaL_pushnumber64(L, result);
 }
-
-
 
 /**
  * A helper to register a single type metatable.

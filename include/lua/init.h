@@ -104,6 +104,46 @@ tarantool_lua(struct lua_State *L,
 	      struct tbuf *out, const char *str);
 
 /**
+ * @brief Return FFI's CTypeID of given С type
+ * @param L Lua State
+ * @param ctypename С type name as string (e.g. "struct request" or "uint32_t")
+ * @sa luaL_pushcdata
+ * @sa luaL_checkcdata
+ * @return FFI's CTypeID
+ */
+uint32_t
+tarantool_lua_ctypeid(struct lua_State *L, const char *ctypename);
+
+/**
+ * @brief Allocate a new block of memory with the given size, push onto the
+ * stack a new cdata of type ctypeid with the block address, and returns
+ * this address. Allocated memory is a subject of GC.
+ * CTypeID must be used from FFI at least once.
+ * @param L Lua State
+ * @param ctypeid FFI's CTypeID of this cdata
+ * @param size size to allocate
+ * @sa tarantool_lua_ctypeid
+ * @sa luaL_checkcdata
+ * @return memory associated with this cdata
+ */
+void *
+luaL_pushcdata(struct lua_State *L, uint32_t ctypeid, uint32_t size);
+
+/**
+ * @brief Checks whether the function argument idx is a cdata
+ * @param L Lua State
+ * @param idx stack index
+ * @param ctypeid FFI's CTypeID of this cdata
+ * @param ctypename C type name as string (used only to raise errors)
+ * @sa tarantool_lua_ctypeid
+ * @sa luaL_pushcdata
+ * @return memory associated with this cdata
+ */
+void *
+luaL_checkcdata(struct lua_State *L, int idx, uint32_t *ctypeid,
+		const char *ctypename);
+
+/**
  * push uint64_t to Lua stack
  *
  * @param L is a Lua State
@@ -111,8 +151,6 @@ tarantool_lua(struct lua_State *L,
  *
  */
 int luaL_pushnumber64(struct lua_State *L, uint64_t val);
-
-
 
 /**
  * show plugin statistics (for admin port)
