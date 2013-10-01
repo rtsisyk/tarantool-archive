@@ -4,3 +4,6 @@
 [submodule "third_party/luajit"]
 	path = third_party/luajit
 	url = http://luajit.org/git/luajit-2.0.git
+[submodule "src/plugin/httpd/httpfast"]
+	path = src/plugin/httpd/httpfast
+	url = git@github.com:Mons/httpfast.git

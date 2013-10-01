@@ -1,0 +1,123 @@
+box.httpd test
+lua box.http.split_url('http://abc')
+---
+ - http
+ - abc
+ - nil
+ - /
+ - 
+...
+lua box.http.split_url('http://abc/')
+---
+ - http
+ - abc
+ - nil
+ - /
+ - 
+...
+lua box.http.split_url('http://abc?')
+---
+ - http
+ - abc
+ - nil
+ - /
+ - 
+...
+lua box.http.split_url('http://abc:')
+---
+ - http
+ - abc
+ - nil
+ - /
+ - 
+...
+lua box.http.split_url('http://abc:123')
+---
+ - http
+ - abc
+ - 123
+ - /
+ - 
+...
+lua box.http.split_url('http://abc:123?')
+---
+ - http
+ - abc
+ - 123
+ - /
+ - 
+...
+lua box.http.split_url('http://abc:123?query')
+---
+ - http
+ - abc
+ - 123
+ - /
+ - query
+...
+lua box.http.split_url('http://domain.subdomain.com:service?query')
+---
+ - http
+ - domain.subdomain.com
+ - service
+ - /
+ - query
+...
+lua box.http.split_url('google.com')
+---
+ - http
+ - google.com
+ - nil
+ - /
+ - 
+...
+lua box.http.split_url('google.com?query')
+---
+ - http
+ - google.com
+ - nil
+ - /
+ - query
+...
+lua box.http.split_url('google.com/abc?query')
+---
+ - http
+ - google.com
+ - nil
+ - /abc
+ - query
+...
+lua box.http.split_url('https://google.com/abc?query')
+---
+ - https
+ - google.com
+ - nil
+ - /abc
+ - query
+...
+lua box.http.split_url('https://google.com:443/abc?query')
+---
+ - https
+ - google.com
+ - 443
+ - /abc
+ - query
+...
+lua box.http.split_url('https://')
+---
+ - https
+ - 
+ - nil
+ - /
+ - 
+...
+lua box.httpd.template("<% for i = 1, cnt do %> <%= abc %> <% end %>", {abc = '1 <3>&" ', cnt = 3})
+---
+ -  1 &lt;3&gt;&amp;&quot;   1 &lt;3&gt;&amp;&quot;   1 &lt;3&gt;&amp;&quot;  
+ - return function(_q, _i, cnt, abc)  for i = 1, cnt do  _i(" ") _q( abc ) _i(" ")  end   end
+...
+lua box.httpd.template("<% for i = 1, cnt do %> <%= ab %> <% end %>", {abc = '1 <3>&" ', cnt = 3})
+---
+ -  nil  nil  nil 
+ - return function(_q, _i, cnt, abc)  for i = 1, cnt do  _i(" ") _q( ab ) _i(" ")  end   end
+...

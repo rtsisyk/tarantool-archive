@@ -1,0 +1,49 @@
+# encoding: tarantool
+print('box.httpd test')
+
+# exec admin "lua httpd = box.httpd.new('localhost', 80)"
+# exec admin "lua httpd:stop()"
+# exec admin "lua httpd:start()"
+
+
+# exec admin "lua httpd = box.httpd.new('127.0.0.1', 8080)"
+#exec admin "lua httpd:start()"
+
+#exec admin "lua box.fiber.sleep(20)"
+
+
+
+exec admin "lua box.http.split_url('http://abc')"
+exec admin "lua box.http.split_url('http://abc/')"
+exec admin "lua box.http.split_url('http://abc?')"
+exec admin "lua box.http.split_url('http://abc:')"
+exec admin "lua box.http.split_url('http://abc:123')"
+exec admin "lua box.http.split_url('http://abc:123?')"
+exec admin "lua box.http.split_url('http://abc:123?query')"
+exec admin "lua box.http.split_url('http://domain.subdomain.com:service?query')"
+exec admin "lua box.http.split_url('google.com')"
+exec admin "lua box.http.split_url('google.com?query')"
+exec admin "lua box.http.split_url('google.com/abc?query')"
+exec admin "lua box.http.split_url('https://google.com/abc?query')"
+exec admin "lua box.http.split_url('https://google.com:443/abc?query')"
+exec admin "lua box.http.split_url('https://')"
+
+
+# exec admin "lua body, hdr = box.http.request('get1', 'http://google.com')"
+# exec admin "lua box.cjson.encode(hdr)"
+
+# exec admin "lua body, hdr = box.http.request('get', 'https://google.com?')"
+# exec admin "lua box.cjson.encode(hdr)"
+
+# exec admin "lua body, hdr = box.http.request('get', 'http://google.com:abc?')"
+# exec admin "lua box.cjson.encode(hdr)"
+
+# exec admin "lua body, hdr = box.http.request('get', 'http://mail.ru:499')"
+# exec admin "lua box.cjson.encode(hdr)"
+
+# exec admin "lua body, hdr = box.http.request('get', 'http://mail.ru')"
+# exec admin "lua box.cjson.encode(hdr)"
+# exec admin "lua body"
+
+exec admin "lua box.httpd.template(\"<% for i = 1, cnt do %> <%= abc %> <% end %>\", {abc = '1 <3>&\" ', cnt = 3})"
+exec admin "lua box.httpd.template(\"<% for i = 1, cnt do %> <%= ab %> <% end %>\", {abc = '1 <3>&\" ', cnt = 3})"

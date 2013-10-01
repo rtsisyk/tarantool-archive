@@ -2,6 +2,8 @@ file(GLOB all_sources *.c *.m *.mm)
 set_source_files_compile_flags(${all_sources})
 
 add_executable(rlist.test rlist.c test.c)
+add_executable(tpeval.test tpeval.c test.c)
+
 add_executable(queue.test queue.c)
 add_executable(mhash.test mhash.c)
 add_executable(rope_basic.test rope_basic.c ${CMAKE_SOURCE_DIR}/src/rope.c)

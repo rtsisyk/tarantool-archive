@@ -141,7 +141,8 @@ def setenv():
         string.join(
             (
                 os.path.join(os.getcwd(), '../src/plugin/mysql'),
-                os.path.join(os.getcwd(), '../src/plugin/pg')
+                os.path.join(os.getcwd(), '../src/plugin/pg'),
+                os.path.join(os.getcwd(), '../src/plugin/httpd')
             ),
             ':'
         )
