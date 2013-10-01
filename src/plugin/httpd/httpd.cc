@@ -389,7 +389,23 @@ lbox_httpd_template(struct lua_State *L)
 		... function arguments
 	*/
 
-	lua_call(L, lua_gettop(L) - 5, 0);
+	if (lua_pcall(L, lua_gettop(L) - 5, 0, 0) != 0) {
+		lua_getfield(L, -1, "match");
+
+		lua_pushvalue(L, -2);
+		lua_pushliteral(L, ":(%d+):(.*)");
+		lua_call(L, 2, 2);
+
+
+		lua_getfield(L, -1, "format");
+		lua_pushliteral(L, "box.httpd.template: users template:%s: %s");
+		lua_pushvalue(L, -4);
+		lua_pushvalue(L, -4);
+		lua_call(L, 3, 1);
+
+
+		lua_error(L);
+	}
 
 	lua_pushnumber(L, 1);
 	lua_rawget(L, 3);

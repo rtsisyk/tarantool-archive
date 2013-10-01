@@ -121,3 +121,7 @@ lua box.httpd.template("<% for i = 1, cnt do %> <%= ab %> <% end %>", {abc = '1 
  -  nil  nil  nil 
  - return function(_q, _i, cnt, abc)  for i = 1, cnt do  _i(" ") _q( ab ) _i(" ")  end   end
 ...
+lua box.httpd.template("<% ab() %>", {ab = '1'})
+---
+error: 'box.httpd.template: users template:1:  attempt to call local ''ab'' (a string value)'
+...
