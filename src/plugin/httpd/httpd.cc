@@ -28,9 +28,6 @@
  * SUCH DAMAGE.
  */
 
-extern "C" {
-	#include "httpfast/httpfast.h"
-}
 
 #define PLUGIN_VERSION			1
 #define PLUGIN_NAME			"httpd"
@@ -54,6 +51,10 @@ extern "C" {
 #include <lua/init.h>
 #include <scoped_guard.h>
 #include "tpleval.h"
+
+extern "C" {
+	#include "httpfast/httpfast.h"
+}
 
 static int
 lbox_http_split_url(struct lua_State *L)
@@ -414,59 +415,226 @@ lbox_httpd_template(struct lua_State *L)
 	return 2;
 }
 
-struct parse_object {
-	parse_http_state state;
-	header_t headers[0];
-};
+static void
+http_parser_on_error(void *uobj, int code, const char *fmt, va_list ap)
+{
+    struct lua_State *L = (struct lua_State *)uobj;
+    char estr[256];
+    vsnprintf(estr, 256, fmt, ap);
+    lua_pushliteral(L, "error");
+    lua_pushstring(L, estr);
+    lua_rawset(L, -4);
+
+    (void)code;
+}
 
 static int
-lbox_http_parse_headers(struct lua_State *L)
+http_parser_on_header(void *uobj,
+                        const char *name, size_t name_len,
+                        const char *value, size_t value_len,
+                        int is_continuation)
+{
+    struct lua_State *L = (struct lua_State *)uobj;
+
+
+    luaL_Buffer b;
+    luaL_buffinit(L, &b);
+    for (int i = 0; i < name_len; i++) {
+        switch(name[i]) {
+            case 'A' ... 'Z':
+                luaL_addchar(&b, name[i] - 'A' + 'a');
+                break;
+            default:
+                luaL_addchar(&b, name[i]);
+        }
+    }
+    luaL_pushresult(&b);
+
+
+    if (is_continuation) {
+        lua_pushvalue(L, -1);
+        lua_rawget(L, -3);
+
+	luaL_Buffer b;
+	luaL_buffinit(L, &b);
+	luaL_addvalue(&b);
+	luaL_addchar(&b, ' ');
+	luaL_addlstring(&b, value, value_len);
+	luaL_pushresult(&b);
+
+    } else {
+        lua_pushvalue(L, -1);
+        lua_rawget(L, -3);
+
+        if (lua_isnil(L, -1)) {
+            lua_pop(L, 1);
+            lua_pushlstring(L, value, value_len);
+        } else {
+            luaL_Buffer b;
+            luaL_buffinit(L, &b);
+            luaL_addvalue(&b);
+            luaL_addchar(&b, ';');
+            luaL_addchar(&b, ' ');
+            luaL_addlstring(&b, value, value_len);
+            luaL_pushresult(&b);
+        }
+    }
+
+    lua_rawset(L, -3);
+
+    return 0;
+}
+
+static int
+http_parser_on_body(void *uobj, const char *body, size_t body_len)
+{
+    struct lua_State *L = (struct lua_State *)uobj;
+    lua_pushliteral(L, "body");
+    lua_pushlstring(L, body, body_len);
+    lua_rawset(L, -4);
+    return 0;
+}
+
+static int
+http_parser_on_request_line(
+        void *uobj,
+        const char *method,
+        size_t method_len,
+        const char *path,
+        size_t path_len,
+
+        int http_major,
+        int http_minor
+    )
+{
+    struct lua_State *L = (struct lua_State *)uobj;
+
+    lua_pushliteral(L, "method");
+    lua_pushlstring(L, method, method_len);
+    lua_rawset(L, -4);
+
+    lua_pushliteral(L, "path");
+    lua_pushlstring(L, path, path_len);
+    lua_rawset(L, -4);
+
+    lua_pushliteral(L, "proto");
+    lua_newtable(L);
+
+    lua_pushnumber(L, 1);
+    lua_pushnumber(L, http_major);
+    lua_rawset(L, -3);
+
+    lua_pushnumber(L, 2);
+    lua_pushnumber(L, http_minor);
+    lua_rawset(L, -3);
+
+    lua_rawset(L, -4);
+
+    return 0;
+}
+
+static int http_parser_on_response_line(
+        void *uobj,
+        unsigned code,
+        const char *reason,
+        size_t reason_len,
+        int http_major,
+        int http_minor
+    )
+{
+    struct lua_State *L = (struct lua_State *)uobj;
+
+    lua_pushliteral(L, "proto");
+    lua_newtable(L);
+
+    lua_pushnumber(L, 1);
+    lua_pushnumber(L, http_major);
+    lua_rawset(L, -3);
+
+    lua_pushnumber(L, 2);
+    lua_pushnumber(L, http_minor);
+    lua_rawset(L, -3);
+
+    lua_rawset(L, -4);
+
+
+    lua_pushliteral(L, "reason");
+    lua_pushlstring(L, reason, reason_len);
+    lua_rawset(L, -4);
+
+    lua_pushliteral(L, "status");
+    lua_pushnumber(L, code);
+    lua_rawset(L, -4);
+
+    return 0;
+}
+
+static int
+lbox_http_parse_response(struct lua_State *L)
 {
 	int top = lua_gettop(L);
 
-	int max_headers;
-	char *s;
-	size_t len;
+        if (!top)
+            luaL_error(L, "bad arguments");
 
-	switch(top) {
-		case 1:
-			max_headers = 128;
-			break;
-		case 2:
-			max_headers = lua_tointeger(L, 2);
-			if (max_headers < 32 || max_headers > 1024)
-				luaL_error(L, "wrong value of max_headers: %d",
-					max_headers);
-			break;
+        size_t len;
+        const char *s = lua_tolstring(L, 1, &len);
 
-		default:
-			luaL_error(L, "bad arguments");
-			break;
-	}
-	s = (char *)lua_tolstring(L, 1, &len);
+        struct parse_http_events ev;
+        memset(&ev, 0, sizeof(ev));
+        ev.on_error               = http_parser_on_error;
+        ev.on_header              = http_parser_on_header;
+        ev.on_body                = http_parser_on_body;
+        ev.on_response_line       = http_parser_on_response_line;
 
 
-	struct parse_object *po = (typeof(po))lua_newuserdata(L,
-		 sizeof(struct parse_object) + sizeof(header_t) * max_headers);
 
-	po->state.p = s;
-	po->state.e = s + len;
-	po->state.headers = po->headers;
-	po->state.header_i = 0;
-	po->state.header_max = max_headers;
+        lua_newtable(L);    /* results */
 
-	int res = parse_http_request(&po->state);
-
-	if (res < 0) {
-		lua_pushnil(L);
-		lua_pushstring(L, "Parse header error");
-		return 2;
-	}
-
-	luaL_error(L, "aaaaaaa %d", po->state.header_i);
+        lua_newtable(L);    /* headers */
+        lua_pushstring(L, "headers");
+        lua_pushvalue(L, -2);
+        lua_rawset(L, -4);
 
 
-	return 0;
+        httpfast_parse(s, len, &ev, L);
+
+        lua_pop(L, 1);
+	return 1;
+}
+
+static int
+lbox_httpd_parse_request(struct lua_State *L)
+{
+	int top = lua_gettop(L);
+
+        if (!top)
+            luaL_error(L, "bad arguments");
+
+        size_t len;
+        const char *s = lua_tolstring(L, 1, &len);
+
+        struct parse_http_events ev;
+        memset(&ev, 0, sizeof(ev));
+        ev.on_error               = http_parser_on_error;
+        ev.on_header              = http_parser_on_header;
+        ev.on_body                = http_parser_on_body;
+        ev.on_request_line        = http_parser_on_request_line;
+
+
+
+        lua_newtable(L);    /* results */
+
+        lua_newtable(L);    /* headers */
+        lua_pushstring(L, "headers");
+        lua_pushvalue(L, -2);
+        lua_rawset(L, -4);
+
+
+        httpfast_parse(s, len, &ev, L);
+
+        lua_pop(L, 1);
+	return 1;
 }
 
 static void
@@ -494,8 +662,8 @@ init(struct lua_State *L)
 	lua_pushcfunction(L, lbox_http_split_url);
 	lua_rawset(L, -3);
 
-	lua_pushstring(L, "parse_headers");
-	lua_pushcfunction(L, lbox_http_parse_headers);
+	lua_pushstring(L, "parse_response");
+	lua_pushcfunction(L, lbox_http_parse_response);
 	lua_rawset(L, -3);
 
 	lua_pop(L, 2);
@@ -512,8 +680,8 @@ init(struct lua_State *L)
 	lua_pushcfunction(L, lbox_httpd_template);
 	lua_rawset(L, -3);
 
-	lua_pushstring(L, "parse_headers");
-	lua_pushcfunction(L, lbox_http_parse_headers);
+	lua_pushstring(L, "parse_request");
+	lua_pushcfunction(L, lbox_httpd_parse_request);
 	lua_rawset(L, -3);
 
 	lua_pop(L, 2);

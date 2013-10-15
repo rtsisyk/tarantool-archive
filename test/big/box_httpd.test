@@ -1,18 +1,6 @@
 # encoding: tarantool
 print('box.httpd test')
 
-# exec admin "lua httpd = box.httpd.new('localhost', 80)"
-# exec admin "lua httpd:stop()"
-# exec admin "lua httpd:start()"
-
-
-# exec admin "lua httpd = box.httpd.new('127.0.0.1', 8080)"
-#exec admin "lua httpd:start()"
-
-#exec admin "lua box.fiber.sleep(20)"
-
-
-
 exec admin "lua box.http.split_url('http://abc')"
 exec admin "lua box.http.split_url('http://abc/')"
 exec admin "lua box.http.split_url('http://abc?')"
@@ -28,31 +16,28 @@ exec admin "lua box.http.split_url('https://google.com/abc?query')"
 exec admin "lua box.http.split_url('https://google.com:443/abc?query')"
 exec admin "lua box.http.split_url('https://')"
 
-
-# exec admin "lua body, hdr = box.http.request('get1', 'http://google.com')"
-# exec admin "lua box.cjson.encode(hdr)"
-
-# exec admin "lua body, hdr = box.http.request('get', 'https://google.com?')"
-# exec admin "lua box.cjson.encode(hdr)"
-
-# exec admin "lua body, hdr = box.http.request('get', 'http://google.com:abc?')"
-# exec admin "lua box.cjson.encode(hdr)"
-
-# exec admin "lua body, hdr = box.http.request('get', 'http://mail.ru:499')"
-# exec admin "lua box.cjson.encode(hdr)"
-
-# exec admin "lua body, hdr = box.http.request('get', 'http://mail.ru')"
-# exec admin "lua box.cjson.encode(hdr)"
-# exec admin "lua body"
-
 exec admin "lua box.httpd.template(\"<% for i = 1, cnt do %> <%= abc %> <% end %>\", {abc = '1 <3>&\" ', cnt = 3})"
 exec admin "lua box.httpd.template(\"<% for i = 1, cnt do %> <%= ab %> <% end %>\", {abc = '1 <3>&\" ', cnt = 3})"
 exec admin "lua box.httpd.template(\"<% ab() %>\", {ab = '1'})"
 
 
-# exec admin "lua httpd = box.httpd.new('localhost', 8080)"
-# exec admin "lua httpd:start()"
-# exec admin "lua box.fiber.sleep(100)"
+exec admin "lua dump = function(...) return \"'\" .. box.cjson.encode(...) .. \"'\" end"
 
-exec admin "lua box.http.parse_headers('abc')"
-exec admin 'lua box.http.parse_headers("Host: s.com\\r\\n\\r\\n")'
+exec admin "lua dump(box.httpd.parse_request('abc'))"
+exec admin 'lua dump(box.httpd.parse_request("GET / HTTP/1.1\\nHost: s.com\\r\\n\\r\\n"))'
+exec admin 'lua dump(box.httpd.parse_request("GET / HTTP/1.0\\nHost: s.com\\nHost: cde.com"))'
+exec admin 'lua dump(box.httpd.parse_request("GET / HTTP/0.9\\nX-Host: s.com\\r\\n\\r\\nbody text"))'
+
+
+exec admin "lua dump(box.http.parse_response('abc'))"
+exec admin 'lua dump(box.http.parse_response("HTTP/1.0 200 Ok\\nHost: s.com\\r\\n\\r\\n"))'
+exec admin 'lua dump(box.http.parse_response("HTTP/1.0 200 Ok\\nHost: s.com\\r\\n\\r\\ntext of body"))'
+
+
+
+exec admin 'lua dump(box.http.request("GET", "http://mail.ru/").status)'
+exec admin 'lua tonumber(box.http.request("GET", "http://mail.ru/").headers["content-length"]) > 0'
+exec admin 'lua box.http.request("GET", "http://mail.ru/").proto[1]'
+exec admin 'lua dump(box.http.request("GET", "http://localhost:88/"))'
+
+exec admin 'lua box.http.request("GET", "http://www.yandex.ru/?text=55,37").body:match("<(html)")'

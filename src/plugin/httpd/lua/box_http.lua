@@ -6,9 +6,9 @@
     end
 
     local function retcode(code, reason)
-        return nil, {
-            Status  = code,
-            Reason  = reason
+        return {
+            status  = code,
+            reason  = reason
         }
     end
 
@@ -24,6 +24,16 @@
         return s
     end
 
+    local function drop_connection(host, port, socket, close)
+        -- TODO cache connections
+
+        socket:close()
+    end
+
+
+    local function ucfirst(str)
+        return (str:gsub("^%l", string.upper))
+    end
 
 
     box.http = {
@@ -31,6 +41,14 @@
             if hdrs == nil then
                 hdrs = {}
             end
+
+            local ho = {}
+            for k, v in pairs(hdrs) do
+                ho[ string.lower(k) ] = v
+            end
+            hdrs = ho
+            ho = nil
+
             method = string.upper(method)
 
             if method ~= 'GET' and method ~= 'POST' then
@@ -65,18 +83,39 @@
                 body = ''
             end
 
+            if method == 'GET' then
+                hdrs['content-length'] = nil
+                body = ''
+            elseif string.len(body) > 0 then
+                hdrs['content-length'] = string.len(body)
+            end
+
+            if hdrs['user-agent'] == nil then
+                hdrs['user-agent'] = 'Tarantool box.http agent'
+            end
+
+            if port == 80 then
+                hdrs['host'] = host
+            else
+                hdrs['host'] = string.format("%s:%d", host, port)
+            end
+
+            hdrs['connection'] = 'keep-alive'
+            if hdrs['te'] == nil then
+                hdrs['te'] = 'trailers'
+            end
+
+            if hdrs.referer == nil then
+                hdrs.referer = url
+            end
+
+            hdrs.URL = url
+            
+            
             local hdr = ''
             for i, v in pairs(hdrs) do
-                if i ~= 'Content-Length' then
-                    hdr = hdr .. string.format("%s: %s\r\n", i, v)
-                end
+                hdr = hdr .. string.format("%s: %s\r\n", ucfirst(i), v)
             end
-
-            if string.len(body) > 0 then
-                hdr = hdr .. "Content-Length: 0\r\n"
-            end
-
-            hdr = hdr .. "User-Agent: Tarantool box.http agent\r\n"
 
             local pquery = ''
 
@@ -86,15 +125,11 @@
 
 
             local req = string.format(
-                "%s %s%s HTTP/1.1\r\n" ..
-                "Host: %s\r\n" ..
-                "%s\r\n" ..
-                "%s",
+                "%s %s%s HTTP/1.1\r\n%s\r\n%s",
 
                     method,
                     path,
                     pquery,
-                    host,
                     hdr,
                     body
             )
@@ -108,11 +143,36 @@
             if res[1] ~= string.len(req) then
                 return retcode(595, "Can't send request")
             end
-                
-
-            return req, res
 
 
+            res = { s:readline({ "\n\n", "\r\n\r\n" }) }
+
+            if res[2] ~= nil and res[2] ~= 'eof' then
+                -- TODO: text of error
+                return retcode(595, "Can't read response headers")
+            end
+            
+            local resp = box.http.parse_response(res[1])
+
+            if resp.error ~= nil then
+                return retcode(595, resp.error)
+            end
+
+            resp.body = ''
+            if resp.headers['content-length'] ~= nil then
+                res = { s:recv(tonumber(resp.headers['content-length'])) }
+                if #res > 1 then
+                    -- TODO: text of error
+                    return retcode(595, "Can't read response body")
+                end
+            end
+
+            resp.body = res[1]
+
+            drop_connection(host, port, s)
+
+--             print(" - '" .. box.cjson.encode(hdrs) .. "'")
+            return resp
         end
     }
 end)(box)

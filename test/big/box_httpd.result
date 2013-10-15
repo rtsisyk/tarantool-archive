@@ -125,3 +125,54 @@ lua box.httpd.template("<% ab() %>", {ab = '1'})
 ---
 error: 'box.httpd.template: users template:1:  attempt to call local ''ab'' (a string value)'
 ...
+lua dump = function(...) return "'" .. box.cjson.encode(...) .. "'" end
+---
+...
+lua dump(box.httpd.parse_request('abc'))
+---
+ - '{"error":"Broken request line","headers":{}}'
+...
+lua dump(box.httpd.parse_request("GET / HTTP/1.1\nHost: s.com\r\n\r\n"))
+---
+ - '{"path":"\/","method":"GET","body":"","proto":[1,1],"headers":{"host":"s.com"}}'
+...
+lua dump(box.httpd.parse_request("GET / HTTP/1.0\nHost: s.com\nHost: cde.com"))
+---
+ - '{"path":"\/","method":"GET","proto":[1,0],"headers":{"host":"s.com; cde.com"}}'
+...
+lua dump(box.httpd.parse_request("GET / HTTP/0.9\nX-Host: s.com\r\n\r\nbody text"))
+---
+ - '{"path":"\/","method":"GET","body":"body text","proto":[0,9],"headers":{"x-host":"s.com"}}'
+...
+lua dump(box.http.parse_response('abc'))
+---
+ - '{"error":"Too short response line","headers":{}}'
+...
+lua dump(box.http.parse_response("HTTP/1.0 200 Ok\nHost: s.com\r\n\r\n"))
+---
+ - '{"reason":"Ok","status":200,"body":"","proto":[1,0],"headers":{"host":"s.com"}}'
+...
+lua dump(box.http.parse_response("HTTP/1.0 200 Ok\nHost: s.com\r\n\r\ntext of body"))
+---
+ - '{"reason":"Ok","status":200,"body":"text of body","proto":[1,0],"headers":{"host":"s.com"}}'
+...
+lua dump(box.http.request("GET", "http://mail.ru/").status)
+---
+ - '200'
+...
+lua tonumber(box.http.request("GET", "http://mail.ru/").headers["content-length"]) > 0
+---
+ - true
+...
+lua box.http.request("GET", "http://mail.ru/").proto[1]
+---
+ - 1
+...
+lua dump(box.http.request("GET", "http://localhost:88/"))
+---
+ - '{"status":595,"reason":"Connection refused"}'
+...
+lua box.http.request("GET", "http://www.yandex.ru/?text=55,37").body:match("<(html)")
+---
+ - html
+...
