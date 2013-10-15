@@ -414,6 +414,60 @@ lbox_httpd_template(struct lua_State *L)
 	return 2;
 }
 
+struct parse_object {
+	parse_http_state state;
+	header_t headers[0];
+};
+
+static int
+lbox_http_parse_headers(struct lua_State *L)
+{
+	int top = lua_gettop(L);
+
+	int max_headers;
+	char *s;
+	size_t len;
+
+	switch(top) {
+		case 1:
+			max_headers = 128;
+			break;
+		case 2:
+			max_headers = lua_tointeger(L, 2);
+			if (max_headers < 32 || max_headers > 1024)
+				luaL_error(L, "wrong value of max_headers: %d",
+					max_headers);
+			break;
+
+		default:
+			luaL_error(L, "bad arguments");
+			break;
+	}
+	s = (char *)lua_tolstring(L, 1, &len);
+
+
+	struct parse_object *po = (typeof(po))lua_newuserdata(L,
+		 sizeof(struct parse_object) + sizeof(header_t) * max_headers);
+
+	po->state.p = s;
+	po->state.e = s + len;
+	po->state.headers = po->headers;
+	po->state.header_i = 0;
+	po->state.header_max = max_headers;
+
+	int res = parse_http_request(&po->state);
+
+	if (res < 0) {
+		lua_pushnil(L);
+		lua_pushstring(L, "Parse header error");
+		return 2;
+	}
+
+	luaL_error(L, "aaaaaaa %d", po->state.header_i);
+
+
+	return 0;
+}
 
 static void
 init(struct lua_State *L)
@@ -439,7 +493,15 @@ init(struct lua_State *L)
 	lua_pushstring(L, "split_url");
 	lua_pushcfunction(L, lbox_http_split_url);
 	lua_rawset(L, -3);
+
+	lua_pushstring(L, "parse_headers");
+	lua_pushcfunction(L, lbox_http_parse_headers);
+	lua_rawset(L, -3);
+
 	lua_pop(L, 2);
+
+
+
 
 
 	lua_getfield(L, LUA_GLOBALSINDEX, "box");
@@ -449,6 +511,11 @@ init(struct lua_State *L)
 	lua_pushstring(L, "template");
 	lua_pushcfunction(L, lbox_httpd_template);
 	lua_rawset(L, -3);
+
+	lua_pushstring(L, "parse_headers");
+	lua_pushcfunction(L, lbox_http_parse_headers);
+	lua_rawset(L, -3);
+
 	lua_pop(L, 2);
 
 }
