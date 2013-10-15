@@ -209,6 +209,8 @@ space_validate_tuple(struct space *sp, struct tuple *new_tuple)
 void
 space_free(void)
 {
+	if (spaces == NULL)
+		return;
 	while (mh_size(spaces) > 0) {
 		mh_int_t i = mh_first(spaces);
 
@@ -216,7 +218,7 @@ space_free(void)
 				mh_i32ptr_node(spaces, i)->val;
 		space_delete(space);
 	}
-	tuple_free();
+	tuple_format_free();
 }
 
 
@@ -265,7 +267,7 @@ void
 space_init(void)
 {
 	spaces = mh_i32ptr_new();
-	tuple_init();
+	tuple_format_init();
 
 	/* configure regular spaces */
 	space_config();
