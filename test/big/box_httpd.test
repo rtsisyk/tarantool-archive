@@ -41,3 +41,71 @@ exec admin 'lua box.http.request("GET", "http://mail.ru/").proto[1]'
 exec admin 'lua dump(box.http.request("GET", "http://localhost:88/"))'
 
 exec admin 'lua box.http.request("GET", "http://www.yandex.ru/?text=55,37").body:match("<(html)")'
+
+
+exec admin "lua httpd = box.httpd.new('127.0.0.1', 12345, { templates = '../httpd' })"
+exec admin "lua type(httpd:route({path = '/abc/:cde/:def'}, function() end))"
+exec admin "lua type(httpd:route({path = '/abc'}, function() end))"
+exec admin "lua type(httpd:route({path = '/abc/:cde'}, function() end))"
+exec admin "lua type(httpd:route({path = '/abc_:cde_def'}, function() end))"
+exec admin "lua type(httpd:route({path = '/abc-:cde-def'}, function() end))"
+exec admin "lua type(httpd:route({path = '/aba*def'}, function() end))"
+exec admin "lua type(httpd:route({path = '/abb*def/cde'}, function() end))"
+
+exec admin "lua httpd:match('/')"
+
+exec admin "lua dump(httpd:match('/abc').endpoint.path)"
+exec admin "lua dump(httpd:match('/abc').stash)"
+
+exec admin "lua dump(httpd:match('/abc/123').endpoint.path)"
+exec admin "lua dump(httpd:match('/abc/123').stash)"
+
+exec admin "lua dump(httpd:match('/abc/123/122').endpoint.path)"
+exec admin "lua dump(httpd:match('/abc/123/122').stash)"
+
+exec admin "lua dump(httpd:match('/abc_123-122').endpoint.path)"
+exec admin "lua dump(httpd:match('/abc_123-122').stash)"
+
+exec admin "lua dump(httpd:match('/abc-123-def').endpoint.path)"
+exec admin "lua dump(httpd:match('/abc-123-def').stash)"
+
+exec admin "lua dump(httpd:match('/aba-123-dea/1/2/3').endpoint.path)"
+exec admin "lua dump(httpd:match('/aba-123-dea/1/2/3').stash)"
+
+exec admin "lua dump(httpd:match('/abb-123-dea/1/2/3/cde').endpoint.path)"
+exec admin "lua dump(httpd:match('/abb-123-dea/1/2/3/cde').stash)"
+
+
+exec admin "lua httpd.catfile('/')" 
+exec admin "lua httpd.catfile('/', '/')" 
+exec admin "lua httpd.catfile('/', 'abc', 'cde')" 
+exec admin "lua httpd.catfile('abc', 'cde', 'def')" 
+exec admin "lua httpd.catfile('abc/', '/cde/', 'def', '/ghi')" 
+exec admin "lua httpd.catfile('abc', '..', 'def')" 
+
+
+exec admin "lua ep = httpd:route({ path = '/test', file = 'test.html.el' }, function(cx) cx:render({ title = 'title: 123' }) end)"
+exec admin "lua string.match(httpd.routes[ #httpd.routes ].template, '<head>')"
+
+exec admin "lua type(httpd:start())"
+
+exec admin "lua res = box.http.request('GET', 'http://127.0.0.1:12345/test')"
+exec admin "lua res.status == 200"
+exec admin "lua res.reason == 'Ok'"
+exec admin "lua string.match(res.body, 'title: 123') == 'title: 123'"
+
+
+exec admin "lua res = box.http.request('GET', 'http://127.0.0.1:12345/test1')"
+exec admin "lua res.status == 404"
+
+# exec admin 'lua hw = function() return 200, nil, "Hello world!\\n" end'
+# exec admin "lua httpd =box.httpd.new('127.0.0.1', 8082, { handler = hw }):start()"
+# exec admin "lua box.http.request('GET', 'http://127.0.0.1:8082/').status"
+# exec admin "lua box.http.request('GET', 'http://127.0.0.1:8082/').body"
+# exec admin "lua type(httpd:stop())"
+# exec admin "lua box.fiber.sleep(.2)"
+# exec admin "lua box.http.request('GET', 'http://127.0.0.1:8082/').status"
+# 
+# exec admin "lua type(box.httpd.new('10.255.1.50', 8080, { handler = hw }):start())"
+# exec admin "lua box.fiber.sleep(1000)"
+

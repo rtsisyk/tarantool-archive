@@ -77,3 +77,5 @@ debian/*.debhelper
 debian/*.log
 debian/*.substvars
 *.cdbs-orig
+src/plugin/httpd/lua/box_http.lua.c
+src/plugin/httpd/lua/box_httpd.lua.c

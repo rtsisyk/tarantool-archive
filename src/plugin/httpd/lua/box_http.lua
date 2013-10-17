@@ -100,7 +100,7 @@
                 hdrs['host'] = string.format("%s:%d", host, port)
             end
 
-            hdrs['connection'] = 'keep-alive'
+            hdrs['connection'] = 'close' -- 'keep-alive'
             if hdrs['te'] == nil then
                 hdrs['te'] = 'trailers'
             end
