@@ -555,14 +555,8 @@
             end
             local default = {
                 max_header_size     = 4096,
-                max_headers         = 128,
-
-                max_fibers          = 1024,
                 header_timeout      = 100,
-
                 handler             = handler,
-
-
                 templates           = '.',
             }
 

@@ -176,7 +176,7 @@ lua box.http.request("GET", "http://www.yandex.ru/?text=55,37").body:match("<(ht
 ---
  - html
 ...
-lua httpd = box.httpd.new('127.0.0.1', 12345)
+lua httpd = box.httpd.new('127.0.0.1', 12345, { templates = '../httpd' })
 ---
 ...
 lua type(httpd:route({path = '/abc/:cde/:def'}, function() end))
@@ -266,4 +266,61 @@ lua dump(httpd:match('/abb-123-dea/1/2/3/cde').endpoint.path)
 lua dump(httpd:match('/abb-123-dea/1/2/3/cde').stash)
 ---
  - '{"def":"-123-dea\/1\/2\/3"}'
+...
+lua httpd.catfile('/')
+---
+ - /
+...
+lua httpd.catfile('/', '/')
+---
+ - /
+...
+lua httpd.catfile('/', 'abc', 'cde')
+---
+ - /abc/cde
+...
+lua httpd.catfile('abc', 'cde', 'def')
+---
+ - abc/cde/def
+...
+lua httpd.catfile('abc/', '/cde/', 'def', '/ghi')
+---
+ - abc/cde/def/ghi
+...
+lua httpd.catfile('abc', '..', 'def')
+---
+ - abc/../def
+...
+lua ep = httpd:route({ path = '/test', file = 'test.html.el' }, function(cx) cx:render({ title = 'title: 123' }) end)
+---
+...
+lua string.match(httpd.routes[ #httpd.routes ].template, '<head>')
+---
+ - <head>
+...
+lua type(httpd:start())
+---
+ - table
+...
+lua res = box.http.request('GET', 'http://127.0.0.1:12345/test')
+---
+...
+lua res.status == 200
+---
+ - true
+...
+lua res.reason == 'Ok'
+---
+ - true
+...
+lua string.match(res.body, 'title: 123') == 'title: 123'
+---
+ - true
+...
+lua res = box.http.request('GET', 'http://127.0.0.1:12345/test1')
+---
+...
+lua res.status == 404
+---
+ - true
 ...
