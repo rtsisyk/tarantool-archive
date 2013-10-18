@@ -43,7 +43,7 @@ exec admin 'lua dump(box.http.request("GET", "http://localhost:88/"))'
 exec admin 'lua box.http.request("GET", "http://www.yandex.ru/?text=55,37").body:match("<(html)")'
 
 
-exec admin "lua httpd = box.httpd.new('127.0.0.1', 12345, { templates = '../httpd' })"
+exec admin "lua httpd = box.httpd.new('127.0.0.1', 12345, { templates = '../../src/plugin/httpd/test/templates' })"
 exec admin "lua type(httpd:route({path = '/abc/:cde/:def'}, function() end))"
 exec admin "lua type(httpd:route({path = '/abc'}, function() end))"
 exec admin "lua type(httpd:route({path = '/abc/:cde'}, function() end))"
@@ -51,6 +51,7 @@ exec admin "lua type(httpd:route({path = '/abc_:cde_def'}, function() end))"
 exec admin "lua type(httpd:route({path = '/abc-:cde-def'}, function() end))"
 exec admin "lua type(httpd:route({path = '/aba*def'}, function() end))"
 exec admin "lua type(httpd:route({path = '/abb*def/cde'}, function() end))"
+exec admin "lua type(httpd:helper('helper_title', function(self, a) return 'Hello, ' .. a end))"
 
 exec admin "lua httpd:match('/')"
 
@@ -97,6 +98,17 @@ exec admin "lua string.match(res.body, 'title: 123') == 'title: 123'"
 
 exec admin "lua res = box.http.request('GET', 'http://127.0.0.1:12345/test1')"
 exec admin "lua res.status == 404"
+
+exec admin "lua type(httpd:route({path = '/helper', file = 'helper.html.el'}))"
+exec admin "lua res = box.http.request('GET', 'http://127.0.0.1:12345/helper')"
+exec admin "lua res.status == 200"
+exec admin "lua res.reason == 'Ok'"
+exec admin "lua string.match(res.body, 'Hello, world') == 'Hello, world'"
+
+exec admin "lua res = box.http.request('GET', 'http://127.0.0.1:12345/helper?abc')"
+exec admin "lua res.status == 200"
+exec admin "lua res.reason == 'Ok'"
+exec admin "lua string.match(res.body, 'Hello, world') == 'Hello, world'"
 
 # exec admin 'lua hw = function() return 200, nil, "Hello world!\\n" end'
 # exec admin "lua httpd =box.httpd.new('127.0.0.1', 8082, { handler = hw }):start()"

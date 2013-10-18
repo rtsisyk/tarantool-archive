@@ -503,6 +503,9 @@ http_parser_on_request_line(
         const char *path,
         size_t path_len,
 
+        const char *query,
+        size_t query_len,
+
         int http_major,
         int http_minor
     )
@@ -515,6 +518,10 @@ http_parser_on_request_line(
 
     lua_pushliteral(L, "path");
     lua_pushlstring(L, path, path_len);
+    lua_rawset(L, -4);
+
+    lua_pushliteral(L, "query");
+    lua_pushlstring(L, query, query_len);
     lua_rawset(L, -4);
 
     lua_pushliteral(L, "proto");

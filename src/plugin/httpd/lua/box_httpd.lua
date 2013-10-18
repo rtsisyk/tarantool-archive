@@ -171,6 +171,9 @@
         end
 
         local vars = {}
+        for hname, sub in pairs(tx.httpd.helpers) do
+            vars[hname] = function(...) return sub(tx, ...) end
+        end
         if opts ~= nil then
             vars = extend(tx.tstash, opts, false)
         end
@@ -429,10 +432,23 @@
 
     end
 
+    local function set_helper(self, name, sub)
+        if sub == nil or type(sub) == 'function' then
+            self.helpers[ name ] = sub
+            return self
+        end
+        errorf("Wrong type for helper function: %s", type(sub))
+    end
+
     local function add_route(self, opts, sub)
-        if type(opts) ~= 'table' or
-                        type(self) ~= 'table' or type(sub) ~= 'function' then
+        if type(opts) ~= 'table' or type(self) ~= 'table' then
             error("Usage: httpd:route({ ... }, function(cx) ... end)")
+        end
+        if sub == nil then
+            sub = function(cx) cx:render() end
+        elseif type(sub) ~= 'function' then
+            errorf("wrong argument: expected function, but received %s",
+                type(sub))
         end
         
         opts = extend({method = 'any'}, opts, false)
@@ -569,10 +585,13 @@
                 options = extend(default, options, true),
 
                 routes  = {  },
+                helpers = {  },
 
+                -- methods
                 route   = add_route,
                 match   = match_route,
                 catfile = catfile,
+                helper  = set_helper,
             }
 
             return self

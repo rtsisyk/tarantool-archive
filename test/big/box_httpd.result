@@ -134,15 +134,15 @@ lua dump(box.httpd.parse_request('abc'))
 ...
 lua dump(box.httpd.parse_request("GET / HTTP/1.1\nHost: s.com\r\n\r\n"))
 ---
- - '{"path":"\/","method":"GET","body":"","proto":[1,1],"headers":{"host":"s.com"}}'
+ - '{"path":"\/","method":"GET","query":"","body":"","proto":[1,1],"headers":{"host":"s.com"}}'
 ...
 lua dump(box.httpd.parse_request("GET / HTTP/1.0\nHost: s.com\nHost: cde.com"))
 ---
- - '{"path":"\/","method":"GET","proto":[1,0],"headers":{"host":"s.com; cde.com"}}'
+ - '{"path":"\/","method":"GET","query":"","proto":[1,0],"headers":{"host":"s.com; cde.com"}}'
 ...
 lua dump(box.httpd.parse_request("GET / HTTP/0.9\nX-Host: s.com\r\n\r\nbody text"))
 ---
- - '{"path":"\/","method":"GET","body":"body text","proto":[0,9],"headers":{"x-host":"s.com"}}'
+ - '{"path":"\/","method":"GET","query":"","body":"body text","proto":[0,9],"headers":{"x-host":"s.com"}}'
 ...
 lua dump(box.http.parse_response('abc'))
 ---
@@ -176,7 +176,7 @@ lua box.http.request("GET", "http://www.yandex.ru/?text=55,37").body:match("<(ht
 ---
  - html
 ...
-lua httpd = box.httpd.new('127.0.0.1', 12345, { templates = '../httpd' })
+lua httpd = box.httpd.new('127.0.0.1', 12345, { templates = '../../src/plugin/httpd/test/templates' })
 ---
 ...
 lua type(httpd:route({path = '/abc/:cde/:def'}, function() end))
@@ -204,6 +204,10 @@ lua type(httpd:route({path = '/aba*def'}, function() end))
  - table
 ...
 lua type(httpd:route({path = '/abb*def/cde'}, function() end))
+---
+ - table
+...
+lua type(httpd:helper('helper_title', function(self, a) return 'Hello, ' .. a end))
 ---
  - table
 ...
@@ -321,6 +325,40 @@ lua res = box.http.request('GET', 'http://127.0.0.1:12345/test1')
 ---
 ...
 lua res.status == 404
+---
+ - true
+...
+lua type(httpd:route({path = '/helper', file = 'helper.html.el'}))
+---
+ - table
+...
+lua res = box.http.request('GET', 'http://127.0.0.1:12345/helper')
+---
+...
+lua res.status == 200
+---
+ - true
+...
+lua res.reason == 'Ok'
+---
+ - true
+...
+lua string.match(res.body, 'Hello, world') == 'Hello, world'
+---
+ - true
+...
+lua res = box.http.request('GET', 'http://127.0.0.1:12345/helper?abc')
+---
+...
+lua res.status == 200
+---
+ - true
+...
+lua res.reason == 'Ok'
+---
+ - true
+...
+lua string.match(res.body, 'Hello, world') == 'Hello, world'
 ---
  - true
 ...
