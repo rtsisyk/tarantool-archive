@@ -110,6 +110,14 @@ exec admin "lua res.status == 200"
 exec admin "lua res.reason == 'Ok'"
 exec admin "lua string.match(res.body, 'Hello, world') == 'Hello, world'"
 
+
+exec admin "lua type(httpd:route({path = '/die', file = 'helper.html.el'}, function() error(123) end ))"
+exec admin "lua res = box.http.request('GET', 'http://127.0.0.1:12345/die')"
+exec admin "lua res.status == 500"
+exec admin "lua res.reason == 'Internal server error'"
+
+#exec admin "lua box.fiber.sleep(3600)"
+
 # exec admin 'lua hw = function() return 200, nil, "Hello world!\\n" end'
 # exec admin "lua httpd =box.httpd.new('127.0.0.1', 8082, { handler = hw }):start()"
 # exec admin "lua box.http.request('GET', 'http://127.0.0.1:8082/').status"

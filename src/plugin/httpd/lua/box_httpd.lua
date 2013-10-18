@@ -12,8 +12,12 @@
         print(string.format(fmt, ...))
     end
 
+    local function sprintf(fmt, ...)
+        return string.format(fmt, ...)
+    end
+
     local server_title =
-        string.format('Tarantool/%s box.httpd server', box.info.version)
+        sprintf('Tarantool/%s box.httpd server', box.info.version)
 
     local codes = {
         [200] = 'Ok',
@@ -25,6 +29,7 @@
         [206] = 'Partial content',
         [207] = 'Multi status',
         [208] = 'Already reported',
+        [226] = 'IM used',
         [300] = 'Multiple choises',
         [301] = 'Moved permanently',
         [302] = 'Found',
@@ -60,6 +65,8 @@
         [429] = 'Too many requests',
         [431] = 'Request header fields too large',
         [449] = 'Retry with',
+        [451] = 'Unavailable for legal reasons',
+        [456] = 'Unrecoverable error',
         [500] = 'Internal server error',
         [501] = 'Not implemented',
         [502] = 'Bad gateway',
@@ -77,8 +84,36 @@
         if codes[code] ~= nil then
             return codes[code]
         end
-        return string.format('Unknown code %d', code)
+        return sprintf('Unknown code %d', code)
     end
+
+    local function ucfirst(str)
+        return str:gsub("^%l", string.upper, 1)
+    end
+
+
+    local mrequest = {
+        __index = {
+            to_string = function(self)
+                local res = self:request_line() .. "\r\n"
+
+                for hn, hv in pairs(self.headers) do
+                    res = sprintf("%s%s: %s\r\n", res, ucfirst(hn), hv)
+                end
+
+                return sprintf("%s\r\n%s", res, self.body)
+            end,
+
+            request_line = function(self)
+                local rstr = self.path
+                if string.len(self.query) then
+                    rstr = rstr .. '?' .. self.query
+                end
+                return sprintf("%s %s HTTP/%d.%d",
+                    self.method, rstr, self.proto[1], self.proto[2])
+            end,
+        }
+    }
 
     local function catfile(...)
         local sp = { ... }
@@ -125,10 +160,6 @@
             res[ k ] = v
         end
         return res
-    end
-    
-    local function ucfirst(str)
-        return (str:gsub("^%l", string.upper))
     end
 
 
@@ -200,9 +231,13 @@
 
     local function handler(self, request)
 
+        if self.hooks.before_routes ~= nil then
+            self.hooks.before_dispatch(self, request)
+        end
+
         local r = self:match(request.path)
         if r == nil then
-            return 404, {}
+            return { 404 }
         end
 
 
@@ -220,7 +255,13 @@
 
         r.endpoint.sub( tx )
 
-        return tx.resp.code, tx.resp.headers, tx.resp.body
+        local res = { tx.resp.code, tx.resp.headers, tx.resp.body }
+
+        if self.hooks.after_dispatch ~= nil then
+            self.hooks.after_dispatch(tx, res)
+        end
+
+        return res
     end
 
     local function normalize_headers(hdrs)
@@ -240,7 +281,8 @@
                 s:readline(
                     self.options.max_header_size,
                     { "\n\n", "\r\n\r\n" }
-    --                     self.options.header_timeout
+                    -- TODO: broken socket uncomment after it is fixed
+--                     ,self.options.header_timeout
                 )
             }
 
@@ -256,33 +298,31 @@
             local p = box.httpd.parse_request(hdrs[1])
             if p['error'] ~= nil then
                 if p.method ~= nil then
-                    log(peer, 400,
-                        string.format("%s %s HTTP/%d.%d",
-                            p.method,
-                            p.path,
-                            p.proto[1],
-                            p.proto[2]
-                        )
-                    )
+                    log(peer, 400, p:request_line())
                 else
                     hlog(peer, 400, hdrs[1])
                 end
-                s:send(string.format("HTTP/1.0 400 Bad request\r\n\r\n%s",
-                    p.error))
+                s:send(sprintf("HTTP/1.0 400 Bad request\r\n\r\n%s", p.error))
                 break
             end
 
             local res = { pcall(self.options.handler, self, p) }
             local code, hdrs, body
-            
+
             if res[1] == false then
                 code = 500
                 hdrs = {}
-                body = res[2]
+                body =
+                      "Unhandled error:\n"
+                    .. debug.traceback(res[2]) .. "\n\n"
+
+                    .. "\n\nRequest:\n"
+                    .. p:to_string()
+
             else
-                code = res[2]
-                hdrs = res[3]
-                body = res[4]
+                code = res[2][1]
+                hdrs = res[2][2]
+                body = res[2][3]
 
                 if type(body) == 'table' then
                     body = table.concat(body)
@@ -297,13 +337,13 @@
                 elseif type(hdrs) ~= 'table' then
                     code = 500
                     hdrs = {}
-                    body = string.format(
+                    body = sprintf(
                         'Handler returned non-table headers: %s',
                         type(hdrs)
                     )
                 end
             end
-            
+
             hdrs = normalize_headers(hdrs)
 
             if hdrs.server == nil then
@@ -331,13 +371,13 @@
             end
 
             hdrs['content-length'] = string.len(body)
-            
+
             local hdr = ''
             for k, v in pairs(hdrs) do
-                hdr = hdr .. string.format("%s: %s\r\n", ucfirst(k), v)
+                hdr = hdr .. sprintf("%s: %s\r\n", ucfirst(k), v)
             end
 
-            s:send(string.format(
+            s:send(sprintf(
                 "HTTP/1.1 %s %s\r\n%s\r\n%s",
                 code,
                 reason_by_code(code),
@@ -352,9 +392,8 @@
             if hdrs.connection ~= 'keep-alive' then
                 break
             end
-        end 
+        end
         s:close()
-
     end
 
     local function httpd_stop(self)
@@ -440,6 +479,13 @@
         errorf("Wrong type for helper function: %s", type(sub))
     end
 
+    local function set_hook(self, name, sub)
+        if sub == nil or type(sub) == 'function' then
+            self.hooks[ name ] = sub
+        end
+        errorf("Wrong type for hook function: %s", type(sub))
+    end
+
     local function add_route(self, opts, sub)
         if type(opts) ~= 'table' or type(self) ~= 'table' then
             error("Usage: httpd:route({ ... }, function(cx) ... end)")
@@ -450,9 +496,9 @@
             errorf("wrong argument: expected function, but received %s",
                 type(sub))
         end
-        
+
         opts = extend({method = 'any'}, opts, false)
-        
+
         if opts.method ~= 'get' and opts.method ~= 'post' then
             opts.method = 'any'
         end
@@ -502,7 +548,7 @@
         end
 
         opts.match = '^' .. opts.match .. '$'
-        
+
         estash = nil
 
         opts.stash = stash
@@ -586,15 +632,28 @@
 
                 routes  = {  },
                 helpers = {  },
+                hooks   = {  },
 
                 -- methods
                 route   = add_route,
                 match   = match_route,
                 catfile = catfile,
                 helper  = set_helper,
+                hook    = set_hook,
             }
 
             return self
+        end,
+
+        parse_request = function(str)
+            local req = box.httpd._parse_request(str)
+            if req.error ~= nil then
+                return req
+            end
+
+            setmetatable(req, mrequest)
+
+            return req
         end
     }
 

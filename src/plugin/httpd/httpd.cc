@@ -687,7 +687,7 @@ init(struct lua_State *L)
 	lua_pushcfunction(L, lbox_httpd_template);
 	lua_rawset(L, -3);
 
-	lua_pushstring(L, "parse_request");
+	lua_pushstring(L, "_parse_request");
 	lua_pushcfunction(L, lbox_httpd_parse_request);
 	lua_rawset(L, -3);
 

@@ -362,3 +362,18 @@ lua string.match(res.body, 'Hello, world') == 'Hello, world'
 ---
  - true
 ...
+lua type(httpd:route({path = '/die', file = 'helper.html.el'}, function() error(123) end ))
+---
+ - table
+...
+lua res = box.http.request('GET', 'http://127.0.0.1:12345/die')
+---
+...
+lua res.status == 500
+---
+ - true
+...
+lua res.reason == 'Internal server error'
+---
+ - true
+...
