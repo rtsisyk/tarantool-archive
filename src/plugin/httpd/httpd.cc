@@ -644,6 +644,55 @@ lbox_httpd_parse_request(struct lua_State *L)
 	return 1;
 }
 
+static inline int
+httpd_on_param(void *uobj,
+		const char *name, size_t name_len,
+		const char *value, size_t value_len)
+{
+	struct lua_State *L = (struct lua_State *)uobj;
+
+	lua_pushlstring(L, name, name_len);
+	lua_pushvalue(L, -1);
+	lua_rawget(L, -3);
+	if (lua_isnil(L, -1)) {
+		lua_pop(L, 1);
+		lua_pushlstring(L, value, value_len);
+		lua_rawset(L, -3);
+		return 0;
+	}
+	if (lua_istable(L, -1)) {
+		lua_pushnumber(L, luaL_getn(L, -1) + 1);
+		lua_pushlstring(L, value, value_len);
+		lua_rawset(L, -3);
+		lua_pop(L, 2);	/* table and name */
+		return 0;
+	}
+	lua_newtable(L);
+	lua_pushvalue(L, -2);
+	lua_rawseti(L, -2, 1);
+	lua_remove(L, -2);
+
+	lua_pushlstring(L, value, value_len);
+	lua_rawseti(L, -2, 2);
+
+	lua_rawset(L, -3);
+	return 0;
+}
+
+static int
+lbox_httpd_params(struct lua_State *L)
+{
+	lua_newtable(L);
+	if (!lua_gettop(L))
+		return 1;
+
+	const char *s;
+	size_t len;
+	s = lua_tolstring(L, 1, &len);
+	httpfast_parse_params(s, len, httpd_on_param, L);
+	return 1;
+}
+
 static void
 init(struct lua_State *L)
 {
@@ -689,6 +738,10 @@ init(struct lua_State *L)
 
 	lua_pushstring(L, "_parse_request");
 	lua_pushcfunction(L, lbox_httpd_parse_request);
+	lua_rawset(L, -3);
+
+	lua_pushliteral(L, "params");
+	lua_pushcfunction(L, lbox_httpd_params);
 	lua_rawset(L, -3);
 
 	lua_pop(L, 2);

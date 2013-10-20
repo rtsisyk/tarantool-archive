@@ -116,6 +116,14 @@ exec admin "lua res = box.http.request('GET', 'http://127.0.0.1:12345/die')"
 exec admin "lua res.status == 500"
 exec admin "lua res.reason == 'Internal server error'"
 
+exec admin "lua dump(box.httpd.params())"
+exec admin "lua dump(box.httpd.params(''))"
+exec admin "lua dump(box.httpd.params('a'))"
+exec admin "lua dump(box.httpd.params('a=b'))"
+exec admin "lua dump(box.httpd.params('a=b&b=cde'))"
+exec admin "lua dump(box.httpd.params('a=b&b=cde&a=1'))"
+exec admin "lua dump(box.httpd.params('a=b&b=cde&a=1&a=10'))"
+
 #exec admin "lua box.fiber.sleep(3600)"
 
 # exec admin 'lua hw = function() return 200, nil, "Hello world!\\n" end'

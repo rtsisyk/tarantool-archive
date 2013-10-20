@@ -377,3 +377,31 @@ lua res.reason == 'Internal server error'
 ---
  - true
 ...
+lua dump(box.httpd.params())
+---
+ - '{}'
+...
+lua dump(box.httpd.params(''))
+---
+ - '{}'
+...
+lua dump(box.httpd.params('a'))
+---
+ - '{"a":""}'
+...
+lua dump(box.httpd.params('a=b'))
+---
+ - '{"a":"b"}'
+...
+lua dump(box.httpd.params('a=b&b=cde'))
+---
+ - '{"a":"b","b":"cde"}'
+...
+lua dump(box.httpd.params('a=b&b=cde&a=1'))
+---
+ - '{"a":["b","1"],"b":"cde"}'
+...
+lua dump(box.httpd.params('a=b&b=cde&a=1&a=10'))
+---
+ - '{"a":["b","1","10"],"b":"cde"}'
+...
