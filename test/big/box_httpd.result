@@ -125,7 +125,7 @@ lua box.httpd.template("<% ab() %>", {ab = '1'})
 ---
 error: 'box.httpd.template: users template:1:  attempt to call local ''ab'' (a string value)'
 ...
-lua dump = function(...) return "'" .. box.cjson.encode(...) .. "'" end
+lua dump = function(d, ...) if type(d) ~= 'table' then return "'" .. box.cjson.encode(d, ...) .. "'" end local o = {} for k, v in pairs(d) do if type(v) ~= 'function' then o[k] = v end end  return "'" .. box.cjson.encode(o) .. "'" end
 ---
 ...
 lua dump(box.httpd.parse_request('abc'))
@@ -134,15 +134,15 @@ lua dump(box.httpd.parse_request('abc'))
 ...
 lua dump(box.httpd.parse_request("GET / HTTP/1.1\nHost: s.com\r\n\r\n"))
 ---
- - '{"path":"\/","method":"GET","query":"","body":"","proto":[1,1],"headers":{"host":"s.com"}}'
+ - '{"path":"\/","broken":false,"method":"GET","query":"","body":"","proto":[1,1],"headers":{"host":"s.com"}}'
 ...
 lua dump(box.httpd.parse_request("GET / HTTP/1.0\nHost: s.com\nHost: cde.com"))
 ---
- - '{"path":"\/","method":"GET","query":"","proto":[1,0],"headers":{"host":"s.com; cde.com"}}'
+ - '{"path":"\/","broken":false,"query":"","method":"GET","proto":[1,0],"headers":{"host":"s.com; cde.com"}}'
 ...
 lua dump(box.httpd.parse_request("GET / HTTP/0.9\nX-Host: s.com\r\n\r\nbody text"))
 ---
- - '{"path":"\/","method":"GET","query":"","body":"body text","proto":[0,9],"headers":{"x-host":"s.com"}}'
+ - '{"path":"\/","broken":false,"method":"GET","query":"","body":"body text","proto":[0,9],"headers":{"x-host":"s.com"}}'
 ...
 lua dump(box.http.parse_response('abc'))
 ---
@@ -211,63 +211,63 @@ lua type(httpd:helper('helper_title', function(self, a) return 'Hello, ' .. a en
 ---
  - table
 ...
-lua httpd:match('/')
+lua httpd:match('GET', '/')
 ---
  - nil
 ...
-lua dump(httpd:match('/abc').endpoint.path)
+lua dump(httpd:match('GET', '/abc').endpoint.path)
 ---
  - '"\/abc"'
 ...
-lua dump(httpd:match('/abc').stash)
+lua dump(httpd:match('GET', '/abc').stash)
 ---
  - '{}'
 ...
-lua dump(httpd:match('/abc/123').endpoint.path)
+lua dump(httpd:match('GET', '/abc/123').endpoint.path)
 ---
  - '"\/abc\/:cde"'
 ...
-lua dump(httpd:match('/abc/123').stash)
+lua dump(httpd:match('GET', '/abc/123').stash)
 ---
  - '{"cde":"123"}'
 ...
-lua dump(httpd:match('/abc/123/122').endpoint.path)
+lua dump(httpd:match('GET', '/abc/123/122').endpoint.path)
 ---
  - '"\/abc\/:cde\/:def"'
 ...
-lua dump(httpd:match('/abc/123/122').stash)
+lua dump(httpd:match('GET', '/abc/123/122').stash)
 ---
  - '{"def":"122","cde":"123"}'
 ...
-lua dump(httpd:match('/abc_123-122').endpoint.path)
+lua dump(httpd:match('GET', '/abc_123-122').endpoint.path)
 ---
  - '"\/abc_:cde_def"'
 ...
-lua dump(httpd:match('/abc_123-122').stash)
+lua dump(httpd:match('GET', '/abc_123-122').stash)
 ---
  - '{"cde_def":"123-122"}'
 ...
-lua dump(httpd:match('/abc-123-def').endpoint.path)
+lua dump(httpd:match('GET', '/abc-123-def').endpoint.path)
 ---
  - '"\/abc-:cde-def"'
 ...
-lua dump(httpd:match('/abc-123-def').stash)
+lua dump(httpd:match('GET', '/abc-123-def').stash)
 ---
  - '{"cde":"123"}'
 ...
-lua dump(httpd:match('/aba-123-dea/1/2/3').endpoint.path)
+lua dump(httpd:match('GET', '/aba-123-dea/1/2/3').endpoint.path)
 ---
  - '"\/aba*def"'
 ...
-lua dump(httpd:match('/aba-123-dea/1/2/3').stash)
+lua dump(httpd:match('GET', '/aba-123-dea/1/2/3').stash)
 ---
  - '{"def":"-123-dea\/1\/2\/3"}'
 ...
-lua dump(httpd:match('/abb-123-dea/1/2/3/cde').endpoint.path)
+lua dump(httpd:match('GET', '/abb-123-dea/1/2/3/cde').endpoint.path)
 ---
  - '"\/abb*def\/cde"'
 ...
-lua dump(httpd:match('/abb-123-dea/1/2/3/cde').stash)
+lua dump(httpd:match('GET', '/abb-123-dea/1/2/3/cde').stash)
 ---
  - '{"def":"-123-dea\/1\/2\/3"}'
 ...
@@ -404,4 +404,66 @@ lua dump(box.httpd.params('a=b&b=cde&a=1'))
 lua dump(box.httpd.params('a=b&b=cde&a=1&a=10'))
 ---
  - '{"a":["b","1","10"],"b":"cde"}'
+...
+lua type(httpd:route({method = 'POST', path = '/dit', file = 'helper.html.el'}, function(tx) tx:render({text = 'POST = ' .. tx.req.body}) end ))
+---
+ - table
+...
+lua type(httpd:route({method = 'GET', path = '/dit', file = 'helper.html.el'}, function(tx) tx:render({text = 'GET = ' .. tx.req.body}) end ))
+---
+ - table
+...
+lua res = box.http.request('POST', 'http://127.0.0.1:12345/dit', {}, 'test')
+---
+...
+lua res.body == 'POST = test'
+---
+ - true
+...
+lua res = box.http.request('GET', 'http://127.0.0.1:12345/dit')
+---
+...
+lua res.body == 'GET = '
+---
+ - true
+...
+lua type(httpd:route({method = 'POST', path = '/gparam' }, function(tx) tx:render({text = 'POST PARAM = ' .. dump( tx.req:post_param() )  }) end ))
+---
+ - table
+...
+lua type(httpd:route({path = '/gparam' }, function(tx) tx:render({text = 'PARAM = ' .. dump( tx.req:query_param() )  }) end ))
+---
+ - table
+...
+lua res = box.http.request('GET', 'http://127.0.0.1:12345/gparam?aaa=12343')
+---
+...
+lua res.body == [[PARAM = '{"aaa":"12343"}']]
+---
+ - true
+...
+lua res = box.http.request('POST', 'http://127.0.0.1:12345/gparam?aaa=12343', {}, '')
+---
+...
+lua res.body == [[POST PARAM = '{}']]
+---
+ - true
+...
+lua res = box.http.request('POST', 'http://127.0.0.1:12345/gparam?aaa=12343', {}, 'bbb=4321')
+---
+...
+lua res.body == [[POST PARAM = '{"bbb":"4321"}']]
+---
+ - true
+...
+lua type(httpd:route({path = '/bparam' }, function(tx) tx:render({text = 'PARAM = ' .. dump( tx.req:param() )  }) end ))
+---
+ - table
+...
+lua res = box.http.request('POST', 'http://127.0.0.1:12345/bparam?aaa=12343', {}, 'bbb=4321')
+---
+...
+lua res.body == [[PARAM = '{"bbb":"4321","aaa":"12343"}']]
+---
+ - true
 ...

@@ -15,6 +15,41 @@
     local function sprintf(fmt, ...)
         return string.format(fmt, ...)
     end
+    
+    local function uri_escape(str)
+        local res = string.gsub(str, '[^a-zA-Z0-9_]',
+            function(c)
+                return string.format('%%%02X', string.byte(c))
+            end
+        )
+        return res
+    end
+
+    local function uri_unescape(str)
+        local res = string.gsub(str, '%%([0-9a-fA-F][0-9a-fA-F])',
+            function(c)
+                return string.char(tonumber(c, 16))
+            end
+        )
+        return res
+    end
+    
+    local function extend(tbl, tblu, raise)
+        local res = {}
+        for k, v in pairs(tbl) do
+            res[ k ] = v
+        end
+        for k, v in pairs(tblu) do
+            if raise then
+                if res[ k ] == nil then
+                    errorf("Unknown option '%s'", k)
+                end
+            end
+            res[ k ] = v
+        end
+        return res
+    end
+
 
     local server_title =
         sprintf('Tarantool/%s box.httpd server', box.info.version)
@@ -91,28 +126,146 @@
         return str:gsub("^%l", string.upper, 1)
     end
 
+   
+    local function cached_query_param(self, name)
+        if name == nil then
+            return self.query_params
+        end
+        return self.query_params[ name ]
+    end
+
+    local function cached_post_param(self, name)
+        if name == nil then
+            return self.post_params
+        end
+        return self.post_params[ name ]
+    end
+
+    local request_methods = {
+        to_string = function(self)
+            local res = self:request_line() .. "\r\n"
+
+            for hn, hv in pairs(self.headers) do
+                res = sprintf("%s%s: %s\r\n", res, ucfirst(hn), hv)
+            end
+
+            return sprintf("%s\r\n%s", res, self.body)
+        end,
+
+        request_line = function(self)
+            local rstr = self.path
+            if string.len(self.query) then
+                rstr = rstr .. '?' .. self.query
+            end
+            return sprintf("%s %s HTTP/%d.%d",
+                self.method, rstr, self.proto[1], self.proto[2])
+        end,
+
+        query_param = function(self, name)
+            if self.query == nil and string.len(self.query) == 0 then
+                rawset(self, 'query_params', {})
+            else
+                local params = box.httpd.params(self.query)
+                local pres = {}
+                for k, v in pairs(params) do
+                    pres[ uri_unescape(k) ] = uri_unescape(v)
+                end
+                rawset(self, 'query_params', pres)
+            end
+
+            rawset(self, 'query_param', cached_query_param)
+            return self:query_param(name)
+        end,
+
+        post_param = function(self, name)
+            if self.headers[ 'content-type' ] == 'multipart/form-data' then
+                -- TODO: do that!
+                rawset(self, 'post_params', {})
+            else
+                local params = box.httpd.params(self.body)
+                local pres = {}
+                for k, v in pairs(params) do
+                    pres[ uri_unescape(k) ] = uri_unescape(v)
+                end
+                rawset(self, 'post_params', pres)
+            end
+            
+            rawset(self, 'post_param', cached_post_param)
+            return self:post_param(name)
+        end,
+
+        param = function(self, name)
+            if name ~= nil then
+                local v = self:post_param(name)
+                if v ~= nil then
+                    return v
+                end
+                return self:query_param(name)
+            end
+
+            local post = self:post_param()
+            local query = self:query_param()
+            return extend(post, query, false)
+        end
+
+    }
+
 
     local mrequest = {
-        __index = {
-            to_string = function(self)
-                local res = self:request_line() .. "\r\n"
+        __index = function(req, item)
+            if item == 'body' then
 
-                for hn, hv in pairs(self.headers) do
-                    res = sprintf("%s%s: %s\r\n", res, ucfirst(hn), hv)
+                if req.s == nil then
+                    rawset(req, 's', nil)
+                    rawset(req, 'body', '')
+                    return ''
                 end
 
-                return sprintf("%s\r\n%s", res, self.body)
-            end,
-
-            request_line = function(self)
-                local rstr = self.path
-                if string.len(self.query) then
-                    rstr = rstr .. '?' .. self.query
+                if req.headers['content-length'] == nil then
+                    rawset(req, 's', nil)
+                    rawset(req, 'body', '')
+                    return ''
                 end
-                return sprintf("%s %s HTTP/%d.%d",
-                    self.method, rstr, self.proto[1], self.proto[2])
-            end,
-        }
+
+                local cl = tonumber(req.headers['content-length'])
+
+                if cl == 0 then
+                    rawset(req, 's', nil)
+                    rawset(req, 'body', '')
+                    return ''
+                end
+
+                local body, status, eno, estr = req.s:recv(cl)
+
+                if status ~= nil then
+                    printf("Can't read request body: %s %s", status, estr)
+                    rawset(req, 's', nil)
+                    rawset(req, 'body', '')
+                    rawset(req, 'broken', true)
+                    return ''
+                end
+                rawset(req, 's', nil)
+                if body ~= nil then
+                    rawset(req, 'body', body)
+                    return body
+                else
+                    rawset(req, 'body', '')
+                    return ''
+                end
+            end
+
+            if item == 'json' then
+                local s, json = pcall(box.cjson.decode, req.body)
+                if s then
+                    rawset(req, 'json', json)
+                    return json
+                else
+                    printf("Can't decode json in request '%s': %s",
+                        req:request_line(), json)
+                    return nil
+                end
+            end
+        end
     }
 
     local function catfile(...)
@@ -146,22 +299,6 @@
     end
 
 
-    local function extend(tbl, tblu, raise)
-        local res = {}
-        for k, v in pairs(tbl) do
-            res[ k ] = v
-        end
-        for k, v in pairs(tblu) do
-            if raise then
-                if res[ k ] == nil then
-                    errorf("Unknown option '%s'", k)
-                end
-            end
-            res[ k ] = v
-        end
-        return res
-    end
-
 
     local function log(peer, code, req, len)
         if req == nil then
@@ -194,6 +331,35 @@
             error("Usage: self:render({ ... })")
         end
 
+        local vars = {}
+        if opts ~= nil then
+            if opts.text ~= nil then
+                if tx.httpd.options.charset ~= nil then
+                    tx.resp.headers['content-type'] =
+                        sprintf("text/plain; charset=%s",
+                            tx.httpd.options.charset
+                        )
+                else
+                    tx.resp.headers['content-type'] = 'text/plain'
+                end
+                tx.resp.body = tostring(opts.text)
+                return
+            end
+
+            if opts.json ~= nil then
+                tx.resp.headers['content-type'] = 'application/json'
+                tx.resp.body = box.json.encode(opts.json)
+                return
+            end
+
+            if opts.data ~= nil then
+                tx.resp.body = tostring(data)
+                return
+            end
+
+            vars = extend(tx.tstash, opts, false)
+        end
+        
         local tpl
         if tx.endpoint.template ~= nil then
             tpl = tx.endpoint.template
@@ -201,15 +367,11 @@
             errorf('template is not defined for the route')
         end
 
-        local vars = {}
         for hname, sub in pairs(tx.httpd.helpers) do
             vars[hname] = function(...) return sub(tx, ...) end
         end
-        if opts ~= nil then
-            vars = extend(tx.tstash, opts, false)
-        end
 
-        tx.resp.body, a = box.httpd.template(tpl, vars)
+        tx.resp.body = box.httpd.template(tpl, vars)
     end
 
     local function redirect_to(tx)
@@ -235,7 +397,7 @@
             self.hooks.before_dispatch(self, request)
         end
 
-        local r = self:match(request.path)
+        local r = self:match(request.method, request.path)
         if r == nil then
             return { 404 }
         end
@@ -291,19 +453,25 @@
                 break
             end
             if hdrs[2] ~= nil then
-                printf("Error while reading headers: %s, %s", hdrs[4], hdrs[2])
+                printf("Error while reading headers: %s, %s (%s)", hdrs[4], hdrs[2], peer)
                 break
             end
 
             local p = box.httpd.parse_request(hdrs[1])
-            if p['error'] ~= nil then
-                if p.method ~= nil then
+            if rawget(p, 'error') ~= nil then
+                if rawget(p, 'method') ~= nil then
                     log(peer, 400, p:request_line())
                 else
                     hlog(peer, 400, hdrs[1])
                 end
                 s:send(sprintf("HTTP/1.0 400 Bad request\r\n\r\n%s", p.error))
                 break
+            end
+
+            -- first access at body will load body
+            if p.method ~= 'GET' then
+                rawset(p, 'body', nil)
+                rawset(p, 's', s)
             end
 
             local res = { pcall(self.options.handler, self, p) }
@@ -352,6 +520,10 @@
 
             if p.proto[1] ~= 1 then
                 hdrs.connection = 'close'
+            elseif p.broken then
+                hdrs.connection = 'close'
+            elseif rawget(p, 'body') == nil then
+                hdrs.connection = 'close'
             elseif p.proto[2] == 1 then
                 if p.headers.connection == nil then
                     hdrs.connection = 'keep-alive'
@@ -392,6 +564,7 @@
             if hdrs.connection ~= 'keep-alive' then
                 break
             end
+
         end
         s:close()
     end
@@ -408,7 +581,7 @@
         return self
     end
 
-    local function match_route(self, route)
+    local function match_route(self, method, route)
         if string.match(route, '.$') ~= '/' then
             route = route .. '/'
         end
@@ -416,29 +589,37 @@
             route = '/' .. route
         end
 
+        method = string.upper(method)
+
         local fit
         local stash = {}
 
         for k, r in pairs(self.routes) do
-            local m = { string.match(route, r.match)  }
-            local nfit
-            if #m > 0 then
-                if #r.stash > 0 then
-                    if #r.stash == #m then
+            if r.method == method or r.method == 'ANY' then
+                local m = { string.match(route, r.match)  }
+                local nfit
+                if #m > 0 then
+                    if #r.stash > 0 then
+                        if #r.stash == #m then
+                            nfit = r
+                        end
+                    else
                         nfit = r
                     end
-                else
-                    nfit = r
-                end
 
-                if nfit ~= nil then
-                    if fit == nil then
-                        fit = nfit
-                        stash = m
-                    else
-                        if #fit.stash > #nfit.stash then
+                    if nfit ~= nil then
+                        if fit == nil then
                             fit = nfit
                             stash = m
+                        else
+                            if #fit.stash > #nfit.stash then
+                                fit = nfit
+                                stash = m
+                            -- fit method is 'ANY'
+                            elseif r.method ~= fit.method and fit.method == 'ANY' then
+                                fit = nfit
+                                stash = m
+                            end
                         end
                     end
                 end
@@ -497,10 +678,12 @@
                 type(sub))
         end
 
-        opts = extend({method = 'any'}, opts, false)
+        opts = extend({method = 'ANY'}, opts, false)
 
-        if opts.method ~= 'get' and opts.method ~= 'post' then
-            opts.method = 'any'
+        opts.method = string.upper(opts.method)
+
+        if opts.method ~= 'GET' and opts.method ~= 'POST' then
+            opts.method = 'ANY'
         end
 
 
@@ -589,11 +772,12 @@
             printf('box.httpd: started at host=%s, port=%s',
                 self.host, self.port)
             while self.is_run do
-                local cs, status, es = s:accept(.1)
+                local cs, status, es, eport = s:accept(.1)
                 if cs == 'error' then
                     printf("Can't accept socket: %s", es)
                     break
                 elseif cs ~= 'timeout' then
+                    es = sprintf('%s:%s', es, eport)
                     box.fiber.wrap(function() process_client(self, cs, es) end)
                     cs = nil
                 end
@@ -620,6 +804,7 @@
                 header_timeout      = 100,
                 handler             = handler,
                 templates           = '.',
+                charset             = 'utf-8',
             }
 
             local self = {
@@ -651,10 +836,17 @@
                 return req
             end
 
+            rawset(req, 'broken', false)
+
+            for m, f in pairs(request_methods) do
+                req[ m ] = f
+            end
+
             setmetatable(req, mrequest)
 
             return req
-        end
+        end,
+
     }
 
 

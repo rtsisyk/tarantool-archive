@@ -21,7 +21,7 @@ exec admin "lua box.httpd.template(\"<% for i = 1, cnt do %> <%= ab %> <% end %>
 exec admin "lua box.httpd.template(\"<% ab() %>\", {ab = '1'})"
 
 
-exec admin "lua dump = function(...) return \"'\" .. box.cjson.encode(...) .. \"'\" end"
+exec admin "lua dump = function(d, ...) if type(d) ~= 'table' then return \"'\" .. box.cjson.encode(d, ...) .. \"'\" end local o = {} for k, v in pairs(d) do if type(v) ~= 'function' then o[k] = v end end  return \"'\" .. box.cjson.encode(o) .. \"'\" end"
 
 exec admin "lua dump(box.httpd.parse_request('abc'))"
 exec admin 'lua dump(box.httpd.parse_request("GET / HTTP/1.1\\nHost: s.com\\r\\n\\r\\n"))'
@@ -53,28 +53,28 @@ exec admin "lua type(httpd:route({path = '/aba*def'}, function() end))"
 exec admin "lua type(httpd:route({path = '/abb*def/cde'}, function() end))"
 exec admin "lua type(httpd:helper('helper_title', function(self, a) return 'Hello, ' .. a end))"
 
-exec admin "lua httpd:match('/')"
+exec admin "lua httpd:match('GET', '/')"
 
-exec admin "lua dump(httpd:match('/abc').endpoint.path)"
-exec admin "lua dump(httpd:match('/abc').stash)"
+exec admin "lua dump(httpd:match('GET', '/abc').endpoint.path)"
+exec admin "lua dump(httpd:match('GET', '/abc').stash)"
 
-exec admin "lua dump(httpd:match('/abc/123').endpoint.path)"
-exec admin "lua dump(httpd:match('/abc/123').stash)"
+exec admin "lua dump(httpd:match('GET', '/abc/123').endpoint.path)"
+exec admin "lua dump(httpd:match('GET', '/abc/123').stash)"
 
-exec admin "lua dump(httpd:match('/abc/123/122').endpoint.path)"
-exec admin "lua dump(httpd:match('/abc/123/122').stash)"
+exec admin "lua dump(httpd:match('GET', '/abc/123/122').endpoint.path)"
+exec admin "lua dump(httpd:match('GET', '/abc/123/122').stash)"
 
-exec admin "lua dump(httpd:match('/abc_123-122').endpoint.path)"
-exec admin "lua dump(httpd:match('/abc_123-122').stash)"
+exec admin "lua dump(httpd:match('GET', '/abc_123-122').endpoint.path)"
+exec admin "lua dump(httpd:match('GET', '/abc_123-122').stash)"
 
-exec admin "lua dump(httpd:match('/abc-123-def').endpoint.path)"
-exec admin "lua dump(httpd:match('/abc-123-def').stash)"
+exec admin "lua dump(httpd:match('GET', '/abc-123-def').endpoint.path)"
+exec admin "lua dump(httpd:match('GET', '/abc-123-def').stash)"
 
-exec admin "lua dump(httpd:match('/aba-123-dea/1/2/3').endpoint.path)"
-exec admin "lua dump(httpd:match('/aba-123-dea/1/2/3').stash)"
+exec admin "lua dump(httpd:match('GET', '/aba-123-dea/1/2/3').endpoint.path)"
+exec admin "lua dump(httpd:match('GET', '/aba-123-dea/1/2/3').stash)"
 
-exec admin "lua dump(httpd:match('/abb-123-dea/1/2/3/cde').endpoint.path)"
-exec admin "lua dump(httpd:match('/abb-123-dea/1/2/3/cde').stash)"
+exec admin "lua dump(httpd:match('GET', '/abb-123-dea/1/2/3/cde').endpoint.path)"
+exec admin "lua dump(httpd:match('GET', '/abb-123-dea/1/2/3/cde').stash)"
 
 
 exec admin "lua httpd.catfile('/')" 
@@ -124,16 +124,32 @@ exec admin "lua dump(box.httpd.params('a=b&b=cde'))"
 exec admin "lua dump(box.httpd.params('a=b&b=cde&a=1'))"
 exec admin "lua dump(box.httpd.params('a=b&b=cde&a=1&a=10'))"
 
+exec admin "lua type(httpd:route({method = 'POST', path = '/dit', file = 'helper.html.el'}, function(tx) tx:render({text = 'POST = ' .. tx.req.body}) end ))"
+exec admin "lua type(httpd:route({method = 'GET', path = '/dit', file = 'helper.html.el'}, function(tx) tx:render({text = 'GET = ' .. tx.req.body}) end ))"
+
+
+exec admin "lua res = box.http.request('POST', 'http://127.0.0.1:12345/dit', {}, 'test')"
+exec admin "lua res.body == 'POST = test'"
+
+exec admin "lua res = box.http.request('GET', 'http://127.0.0.1:12345/dit')"
+exec admin "lua res.body == 'GET = '"
+
+
+
+exec admin "lua type(httpd:route({method = 'POST', path = '/gparam' }, function(tx) tx:render({text = 'POST PARAM = ' .. dump( tx.req:post_param() )  }) end ))"
+
+exec admin "lua type(httpd:route({path = '/gparam' }, function(tx) tx:render({text = 'PARAM = ' .. dump( tx.req:query_param() )  }) end ))"
+
+exec admin "lua res = box.http.request('GET', 'http://127.0.0.1:12345/gparam?aaa=12343')"
+exec admin "lua res.body == [[PARAM = '{\"aaa\":\"12343\"}']]"
+
+exec admin "lua res = box.http.request('POST', 'http://127.0.0.1:12345/gparam?aaa=12343', {}, '')"
+exec admin "lua res.body == [[POST PARAM = '{}']]"
+exec admin "lua res = box.http.request('POST', 'http://127.0.0.1:12345/gparam?aaa=12343', {}, 'bbb=4321')"
+exec admin "lua res.body == [[POST PARAM = '{\"bbb\":\"4321\"}']]"
+
+exec admin "lua type(httpd:route({path = '/bparam' }, function(tx) tx:render({text = 'PARAM = ' .. dump( tx.req:param() )  }) end ))"
+exec admin "lua res = box.http.request('POST', 'http://127.0.0.1:12345/bparam?aaa=12343', {}, 'bbb=4321')"
+exec admin "lua res.body == [[PARAM = '{\"bbb\":\"4321\",\"aaa\":\"12343\"}']]"
+
 #exec admin "lua box.fiber.sleep(3600)"
-
-# exec admin 'lua hw = function() return 200, nil, "Hello world!\\n" end'
-# exec admin "lua httpd =box.httpd.new('127.0.0.1', 8082, { handler = hw }):start()"
-# exec admin "lua box.http.request('GET', 'http://127.0.0.1:8082/').status"
-# exec admin "lua box.http.request('GET', 'http://127.0.0.1:8082/').body"
-# exec admin "lua type(httpd:stop())"
-# exec admin "lua box.fiber.sleep(.2)"
-# exec admin "lua box.http.request('GET', 'http://127.0.0.1:8082/').status"
-# 
-# exec admin "lua type(box.httpd.new('10.255.1.50', 8080, { handler = hw }):start())"
-# exec admin "lua box.fiber.sleep(1000)"
-
