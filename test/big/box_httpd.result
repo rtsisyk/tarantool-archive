@@ -138,7 +138,7 @@ lua dump(box.httpd.parse_request("GET / HTTP/1.1\nHost: s.com\r\n\r\n"))
 ...
 lua dump(box.httpd.parse_request("GET / HTTP/1.0\nHost: s.com\nHost: cde.com"))
 ---
- - '{"path":"\/","broken":false,"query":"","method":"GET","proto":[1,0],"headers":{"host":"s.com; cde.com"}}'
+ - '{"path":"\/","broken":false,"query":"","method":"GET","proto":[1,0],"headers":{"host":"s.com, cde.com"}}'
 ...
 lua dump(box.httpd.parse_request("GET / HTTP/0.9\nX-Host: s.com\r\n\r\nbody text"))
 ---
@@ -466,4 +466,42 @@ lua res = box.http.request('POST', 'http://127.0.0.1:12345/bparam?aaa=12343', {}
 lua res.body == [[PARAM = '{"bbb":"4321","aaa":"12343"}']]
 ---
  - true
+...
+lua type(httpd:route({method = 'GET', path = '/cookie' }, function(tx) tx:cookie({name = 'name', value = 'value' }) tx:cookie({name = 'time', value = 'a ' .. tostring(tx:cookie('time')) }) tx:render({text = 'a ' .. tostring(tx:cookie('time'))  }) end ))
+---
+ - table
+...
+lua res = box.http.request('GET', 'http://127.0.0.1:12345/cookie')
+---
+...
+lua dump(res.status)
+---
+ - '200'
+...
+lua dump(res.body)
+---
+ - '"a nil"'
+...
+lua dump(res.headers['set-cookie'])
+---
+ - '"name=value;path=\/cookie, time=a%20nil;path=\/cookie"'
+...
+lua res = box.http.request('GET', 'http://127.0.0.1:12345/cookie', { cookie = 'name=ignore; time=123' })
+---
+...
+lua dump(res.status)
+---
+ - '200'
+...
+lua dump(res.body)
+---
+ - '"a 123"'
+...
+lua dump(res.headers)
+---
+ - '{"server":"Tarantool\/1.5.1-164-gb51faa4 box.httpd server","content-type":"text\/plain; charset=utf-8","connection":"close","set-cookie":"name=value;path=\/cookie, time=a%20123;path=\/cookie","content-length":"5"}'
+...
+lua dump(res.headers['set-cookie'])
+---
+ - '"name=value;path=\/cookie, time=a%20123;path=\/cookie"'
 ...

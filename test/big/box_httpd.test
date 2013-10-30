@@ -152,4 +152,18 @@ exec admin "lua type(httpd:route({path = '/bparam' }, function(tx) tx:render({te
 exec admin "lua res = box.http.request('POST', 'http://127.0.0.1:12345/bparam?aaa=12343', {}, 'bbb=4321')"
 exec admin "lua res.body == [[PARAM = '{\"bbb\":\"4321\",\"aaa\":\"12343\"}']]"
 
-#exec admin "lua box.fiber.sleep(3600)"
+
+exec admin "lua type(httpd:route({method = 'GET', path = '/cookie' }, function(tx) tx:cookie({name = 'name', value = 'value' }) tx:cookie({name = 'time', value = 'a ' .. tostring(tx:cookie('time')) }) tx:render({text = 'a ' .. tostring(tx:cookie('time'))  }) end ))"
+
+exec admin "lua res = box.http.request('GET', 'http://127.0.0.1:12345/cookie')"
+exec admin "lua dump(res.status)"
+exec admin "lua dump(res.body)"
+exec admin "lua dump(res.headers['set-cookie'])"
+
+exec admin "lua res = box.http.request('GET', 'http://127.0.0.1:12345/cookie', { cookie = 'name=ignore; time=123' })"
+exec admin "lua dump(res.status)"
+exec admin "lua dump(res.body)"
+exec admin "lua dump(res.headers)"
+exec admin "lua dump(res.headers['set-cookie'])"
+
+# exec admin "lua box.fiber.sleep(3600)"

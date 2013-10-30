@@ -473,7 +473,7 @@ http_parser_on_header(void *uobj,
             luaL_Buffer b;
             luaL_buffinit(L, &b);
             luaL_addvalue(&b);
-            luaL_addchar(&b, ';');
+            luaL_addchar(&b, ',');
             luaL_addchar(&b, ' ');
             luaL_addlstring(&b, value, value_len);
             luaL_pushresult(&b);

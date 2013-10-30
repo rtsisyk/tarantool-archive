@@ -326,6 +326,92 @@
     end
 
 
+    local function expires_str(str)
+
+        local now = os.time()
+        local gmtnow = now - os.difftime(now, os.time(os.date("!*t", now)))
+        local fmt = '%a, %d-%b-%Y %H:%M:%S GMT'
+
+        if str == 'now' or str == 0 or str == '0' then
+            return os.date(fmt, gmtnow)
+        end
+
+        local diff, period = string.match(str, '^[+]?(%d+)([hdmy])$')
+        if period == nil then
+            return str
+        end
+
+        diff = tonumber(diff)
+        if period == 'h' then
+            diff = diff * 3600
+        elseif period == 'd' then
+            diff = diff * 86400
+        elseif period == 'm' then
+            diff = diff * 86400 * 30
+        else
+            diff = diff * 86400 * 365
+        end
+
+        return os.date(fmt, gmtnow + diff)
+    end
+
+
+    local function set_cookie(tx, cookie)
+        local name = cookie.name
+        local value = cookie.value
+
+        if name == nil then
+            error('cookie.name is undefined')
+        end
+        if value == nil then
+            error('cookie.value is undefined')
+        end
+
+        local str = sprintf('%s=%s', name, uri_escape(value))
+        if cookie.path ~= nil then
+            str = sprintf('%s;path=%s', str, uri_escape(cookie.path))
+        else
+            str = sprintf('%s;path=%s', str, tx.req.path)
+        end
+        if cookie.domain ~= nil then
+            str = sprintf('%s;domain=%s', str, domain)
+        end
+
+        if cookie.expires ~= nil then
+            str = sprintf('%s;expires="%s"', str, expires_str(cookie.expires))
+        end
+
+        if tx.resp.headers['set-cookie'] == nil then
+            tx.resp.headers['set-cookie'] = { str }
+        elseif type(tx.resp.headers['set-cookie']) == 'string' then
+            tx.resp.headers['set-cookie'] = {
+                tx.resp.headers['set-cookie'],
+                str
+            }
+        else
+            table.insert(tx.resp.headers['set-cookie'], str)
+        end
+        return str
+    end
+
+
+    local function cookie(tx, cookie)
+        if type(cookie) == 'table' then
+            return set_cookie(tx, cookie)
+        end
+        
+        if tx.req.headers.cookie == nil then
+            return nil
+        end
+        for k, v in string.gmatch(
+                    tx.req.headers.cookie, "([^=,; \t]+)=([^,; \t]+)") do
+            if k == cookie then
+                return uri_unescape(v)
+            end
+        end
+        return nil
+    end
+
     local function render(tx, opts)
         if tx == nil then
             error("Usage: self:render({ ... })")
@@ -409,13 +495,14 @@
             endpoint    = r.endpoint,
             tstash      = r.stash,
             render      = render,
+            cookie      = cookie,
             redirect_to = redirect_to,
             httpd       = self,
             stash       = access_stash
         }
 
-
         r.endpoint.sub( tx )
+
 
         local res = { tx.resp.code, tx.resp.headers, tx.resp.body }
 
@@ -546,8 +633,15 @@
 
             local hdr = ''
             for k, v in pairs(hdrs) do
-                hdr = hdr .. sprintf("%s: %s\r\n", ucfirst(k), v)
+                if type(v) == 'table' then
+                    for i, sv in pairs(v) do
+                        hdr = hdr .. sprintf("%s: %s\r\n", ucfirst(k), sv)
+                    end
+                else
+                    hdr = hdr .. sprintf("%s: %s\r\n", ucfirst(k), v)
+                end
             end
+
 
             s:send(sprintf(
                 "HTTP/1.1 %s %s\r\n%s\r\n%s",

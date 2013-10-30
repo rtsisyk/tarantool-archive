@@ -188,6 +188,70 @@ Embedded Lua)
 * `redirect_to` - используется для управления перенаправлениями со
 страницы на страницу
 * `render({})` - вызывает рендер
+* `cookie` - позволяет получить cookie из запроса, либо установить их
+для ответа
+
+#### работа с куками
+
+Для получения значения куки из запроса используется следующая форма:
+
+```lua
+
+    function show_user(self)
+
+        local uid = self:cookie('id')
+
+        if uid ~= nil and string.match(uid, '^%d$') ~= nil then
+
+            local user = box.select(users, 0, uid)
+            return self:render({ user = user })
+        end
+
+        return self:redirect_to('/login')
+    end
+
+```
+
+Для того чтобы установить куки используется вызов того же метода, но
+в качестве первого аргумента ему необходимо передать табличку, описывающую
+устанавливаемую куку:
+
+```lua
+
+    function user_login(self)
+
+        local login = self:param('login')
+        local password = self:param('password')
+
+        local user = box.select(users, 1, login, password)
+        if user ~= nil then
+            self:cookie({ name = 'uid', value = user[0], expires = '+1y' })
+            return self:reditect_to('/')
+        end
+
+        -- do login again and again and again
+        return self:redirect_to('/login')
+    end
+
+
+```
+
+Табличка для установки кук должна содержать следующие поля:
+
+* `name`
+* `value`
+* `path` (опционально, если не установлено, берется текущее)
+* `domain` (опционально)
+* `expires` - строка даты для истечения куки, либо строка, описывающая
+относительную (текущей) дату смещения, например:
+
+ * `1d`  - 1 день
+ * `+1d` - то же
+ * `23d` - 23 дня
+ * `+1m` - 1 месяц (30 дней)
+ * `+1y` - 1 год (365 дней)
+
+
 
 
 #### Методы и атрибуты запроса
