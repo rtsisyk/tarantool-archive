@@ -209,7 +209,7 @@ lua type(httpd:route({path = '/abb*def/cde', name = 'star'}, function() end))
 ...
 lua type(httpd:route({path = '/abb*def/cde', name = 'star'}, function() end))
 ---
-error: '[string "-- box.httpd..."]:9: Route with name ''star'' is already exists'
+error: '[string "-- box.httpd..."]:8: Route with name ''star'' is already exists'
 ...
 lua type(httpd:helper('helper_title', function(self, a) return 'Hello, ' .. a end))
 ---
