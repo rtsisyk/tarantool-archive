@@ -412,6 +412,10 @@
         return nil
     end
 
+    local function url_for_helper(tx, name, args, query)
+        return tx:url_for(name, args, query)
+    end
+
     local function render(tx, opts)
         if tx == nil then
             error("Usage: self:render({ ... })")
@@ -433,7 +437,14 @@
             end
 
             if opts.json ~= nil then
-                tx.resp.headers['content-type'] = 'application/json'
+                if tx.httpd.options.charset ~= nil then
+                    tx.resp.headers['content-type'] =
+                        sprintf('application/json; charset=%s',
+                            tx.httpd.options.charset
+                        )
+                else
+                    tx.resp.headers['content-type'] = 'application/json'
+                end
                 tx.resp.body = box.json.encode(opts.json)
                 return
             end
@@ -453,6 +464,10 @@
             errorf('template is not defined for the route')
         end
 
+        if type(tpl) == 'function' then
+            tpl = tpl()
+        end
+
         for hname, sub in pairs(tx.httpd.helpers) do
             vars[hname] = function(...) return sub(tx, ...) end
         end
@@ -460,10 +475,9 @@
         tx.resp.body = box.httpd.template(tpl, vars)
     end
 
-    local function redirect_to(tx)
-        if tx == nil then
-            error("Usage: self:redirect_to({ ... })")
-        end
+    local function redirect_to(tx, name, args, query)
+        tx.resp.headers.location = tx:url_for(name, args, query)
+        tx.resp.status = 302
     end
 
     local function access_stash(tx, name, ...)
@@ -475,6 +489,13 @@
         end
 
         return tx.tstash[ name ]
+    end
+
+    local function url_for_tx(tx, name, args, query)
+        if name == 'current' then
+            return tx.endpoint:url_for(args, query)
+        end
+        return tx.httpd:url_for(name, args, query)
     end
 
     local function handler(self, request)
@@ -498,7 +519,8 @@
             cookie      = cookie,
             redirect_to = redirect_to,
             httpd       = self,
-            stash       = access_stash
+            stash       = access_stash,
+            url_for     = url_for_tx
         }
 
         r.endpoint.sub( tx )
@@ -761,6 +783,38 @@
         errorf("Wrong type for hook function: %s", type(sub))
     end
 
+    local function url_for_route(r, args, query)
+        if args == nil then
+            args = {}
+        end
+        name = r.path
+        for i, sn in pairs(r.stash) do
+            local sv = args[sn]
+            if sv == nil then
+                sv = ''
+            end
+            name = string.gsub(name, '[*:]' .. sn, sv, 1)
+        end
+
+        if query ~= nil then
+            if type(query) == 'table' then
+                local sep = '?'
+                for k, v in pairs(query) do
+                    name = name .. sep .. uri_escape(k) .. '=' .. uri_escape(v)
+                    sep = '&'
+                end
+            else
+                name = name .. '?' .. query
+            end
+        end
+
+        if string.match(name, '^/') == nil then
+            return '/' .. name
+        else
+            return name
+        end
+    end
+
     local function add_route(self, opts, sub)
         if type(opts) ~= 'table' or type(self) ~= 'table' then
             error("Usage: httpd:route({ ... }, function(cx) ... end)")
@@ -830,11 +884,41 @@
 
         opts.stash = stash
         opts.sub = sub
+        opts.url_for = url_for_route
 
         load_template(self, opts)
 
-        table.insert(self.routes, opts)
+        if opts.name ~= nil then
+            if opts.name == 'current' then
+                error("Route can not have name 'current'")
+            end
+            if self.iroutes[ opts.name ] ~= nil then
+                errorf("Route with name '%s' is already exists", opts.name)
+            end
+            table.insert(self.routes, opts)
+            self.iroutes[ opts.name ] = #self.routes
+        else
+            table.insert(self.routes, opts)
+        end
         return self
+    end
+
+    local function url_for_httpd(httpd, name, args, query)
+        
+        local idx = httpd.iroutes[ name ]
+        if idx ~= nil then
+            return httpd.routes[ idx ]:url_for(args, query)
+        end
+
+        if string.match(name, '^/') == nil then
+            if string.match(name, '^https?://') ~= nil then
+                return name
+            else
+                return '/' .. name
+            end
+        else
+            return name
+        end
     end
 
 
@@ -910,15 +994,18 @@
                 options = extend(default, options, true),
 
                 routes  = {  },
-                helpers = {  },
+                iroutes = {  },
+                helpers = {
+                    url_for = url_for_helper,
+                },
                 hooks   = {  },
 
                 -- methods
                 route   = add_route,
                 match   = match_route,
-                catfile = catfile,
                 helper  = set_helper,
                 hook    = set_hook,
+                url_for = url_for_httpd,
             }
 
             return self

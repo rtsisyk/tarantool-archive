@@ -179,7 +179,7 @@ lua box.http.request("GET", "http://www.yandex.ru/?text=55,37").body:match("<(ht
 lua httpd = box.httpd.new('127.0.0.1', 12345, { templates = '../../src/plugin/httpd/test/templates' })
 ---
 ...
-lua type(httpd:route({path = '/abc/:cde/:def'}, function() end))
+lua type(httpd:route({path = '/abc/:cde/:def', name = 'test'}, function() end))
 ---
  - table
 ...
@@ -203,9 +203,13 @@ lua type(httpd:route({path = '/aba*def'}, function() end))
 ---
  - table
 ...
-lua type(httpd:route({path = '/abb*def/cde'}, function() end))
+lua type(httpd:route({path = '/abb*def/cde', name = 'star'}, function() end))
 ---
  - table
+...
+lua type(httpd:route({path = '/abb*def/cde', name = 'star'}, function() end))
+---
+error: '[string "-- box.httpd..."]:9: Route with name ''star'' is already exists'
 ...
 lua type(httpd:helper('helper_title', function(self, a) return 'Hello, ' .. a end))
 ---
@@ -271,29 +275,25 @@ lua dump(httpd:match('GET', '/abb-123-dea/1/2/3/cde').stash)
 ---
  - '{"def":"-123-dea\/1\/2\/3"}'
 ...
-lua httpd.catfile('/')
+lua httpd:url_for('abcdef')
 ---
- - /
+ - /abcdef
 ...
-lua httpd.catfile('/', '/')
+lua httpd:url_for('test')
 ---
- - /
+ - /abc//
 ...
-lua httpd.catfile('/', 'abc', 'cde')
+lua httpd:url_for('test', { cde = 'cde_v', def = 'def_v' })
 ---
- - /abc/cde
+ - /abc/cde_v/def_v
 ...
-lua httpd.catfile('abc', 'cde', 'def')
+lua httpd:url_for('star', { def = '/def_v' })
 ---
- - abc/cde/def
+ - /abb/def_v/cde
 ...
-lua httpd.catfile('abc/', '/cde/', 'def', '/ghi')
+lua httpd:url_for('star', { def = '/def_v' }, { a = 'b', c = 'd' })
 ---
- - abc/cde/def/ghi
-...
-lua httpd.catfile('abc', '..', 'def')
----
- - abc/../def
+ - /abb/def_v/cde?a=b&c=d
 ...
 lua ep = httpd:route({ path = '/test', file = 'test.html.el' }, function(cx) cx:render({ title = 'title: 123' }) end)
 ---

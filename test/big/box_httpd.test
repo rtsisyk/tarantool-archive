@@ -44,13 +44,14 @@ exec admin 'lua box.http.request("GET", "http://www.yandex.ru/?text=55,37").body
 
 
 exec admin "lua httpd = box.httpd.new('127.0.0.1', 12345, { templates = '../../src/plugin/httpd/test/templates' })"
-exec admin "lua type(httpd:route({path = '/abc/:cde/:def'}, function() end))"
+exec admin "lua type(httpd:route({path = '/abc/:cde/:def', name = 'test'}, function() end))"
 exec admin "lua type(httpd:route({path = '/abc'}, function() end))"
 exec admin "lua type(httpd:route({path = '/abc/:cde'}, function() end))"
 exec admin "lua type(httpd:route({path = '/abc_:cde_def'}, function() end))"
 exec admin "lua type(httpd:route({path = '/abc-:cde-def'}, function() end))"
 exec admin "lua type(httpd:route({path = '/aba*def'}, function() end))"
-exec admin "lua type(httpd:route({path = '/abb*def/cde'}, function() end))"
+exec admin "lua type(httpd:route({path = '/abb*def/cde', name = 'star'}, function() end))"
+exec admin "lua type(httpd:route({path = '/abb*def/cde', name = 'star'}, function() end))"
 exec admin "lua type(httpd:helper('helper_title', function(self, a) return 'Hello, ' .. a end))"
 
 exec admin "lua httpd:match('GET', '/')"
@@ -77,12 +78,11 @@ exec admin "lua dump(httpd:match('GET', '/abb-123-dea/1/2/3/cde').endpoint.path)
 exec admin "lua dump(httpd:match('GET', '/abb-123-dea/1/2/3/cde').stash)"
 
 
-exec admin "lua httpd.catfile('/')" 
-exec admin "lua httpd.catfile('/', '/')" 
-exec admin "lua httpd.catfile('/', 'abc', 'cde')" 
-exec admin "lua httpd.catfile('abc', 'cde', 'def')" 
-exec admin "lua httpd.catfile('abc/', '/cde/', 'def', '/ghi')" 
-exec admin "lua httpd.catfile('abc', '..', 'def')" 
+exec admin "lua httpd:url_for('abcdef')"
+exec admin "lua httpd:url_for('test')"
+exec admin "lua httpd:url_for('test', { cde = 'cde_v', def = 'def_v' })"
+exec admin "lua httpd:url_for('star', { def = '/def_v' })"
+exec admin "lua httpd:url_for('star', { def = '/def_v' }, { a = 'b', c = 'd' })"
 
 
 exec admin "lua ep = httpd:route({ path = '/test', file = 'test.html.el' }, function(cx) cx:render({ title = 'title: 123' }) end)"
