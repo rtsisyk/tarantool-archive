@@ -128,6 +128,9 @@ error: 'box.httpd.template: users template:1:  attempt to call local ''ab'' (a s
 lua dump = function(d, ...) if type(d) ~= 'table' then return "'" .. box.cjson.encode(d, ...) .. "'" end local o = {} for k, v in pairs(d) do if type(v) ~= 'function' then o[k] = v end end  return "'" .. box.cjson.encode(o) .. "'" end
 ---
 ...
+lua hdump = function(h) h.server = nil return dump(h) end
+---
+...
 lua dump(box.httpd.parse_request('abc'))
 ---
  - '{"error":"Broken request line","headers":{}}'
@@ -497,9 +500,9 @@ lua dump(res.body)
 ---
  - '"a 123"'
 ...
-lua dump(res.headers)
+lua hdump(res.headers)
 ---
- - '{"server":"Tarantool\/1.5.1-164-gb51faa4 box.httpd server","content-type":"text\/plain; charset=utf-8","connection":"close","set-cookie":"name=value;path=\/cookie, time=a%20123;path=\/cookie","content-length":"5"}'
+ - '{"set-cookie":"name=value;path=\/cookie, time=a%20123;path=\/cookie","content-length":"5","content-type":"text\/plain; charset=utf-8","connection":"close"}'
 ...
 lua dump(res.headers['set-cookie'])
 ---

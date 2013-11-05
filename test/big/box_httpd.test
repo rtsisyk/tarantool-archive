@@ -22,6 +22,7 @@ exec admin "lua box.httpd.template(\"<% ab() %>\", {ab = '1'})"
 
 
 exec admin "lua dump = function(d, ...) if type(d) ~= 'table' then return \"'\" .. box.cjson.encode(d, ...) .. \"'\" end local o = {} for k, v in pairs(d) do if type(v) ~= 'function' then o[k] = v end end  return \"'\" .. box.cjson.encode(o) .. \"'\" end"
+exec admin "lua hdump = function(h) h.server = nil return dump(h) end"
 
 exec admin "lua dump(box.httpd.parse_request('abc'))"
 exec admin 'lua dump(box.httpd.parse_request("GET / HTTP/1.1\\nHost: s.com\\r\\n\\r\\n"))'
@@ -163,7 +164,7 @@ exec admin "lua dump(res.headers['set-cookie'])"
 exec admin "lua res = box.http.request('GET', 'http://127.0.0.1:12345/cookie', { cookie = 'name=ignore; time=123' })"
 exec admin "lua dump(res.status)"
 exec admin "lua dump(res.body)"
-exec admin "lua dump(res.headers)"
+exec admin "lua hdump(res.headers)"
 exec admin "lua dump(res.headers['set-cookie'])"
 
 # exec admin "lua box.fiber.sleep(3600)"
