@@ -35,6 +35,7 @@
 #include <sys/types.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <sys/sendfile.h>
 #ifndef PIPE_BUF
 #include <sys/param.h>
 #endif
@@ -46,6 +47,8 @@ pid_t logger_pid;
 static bool booting = true;
 static const char *binary_filename;
 static int *log_level;
+static char tmplog_filename[PATH_MAX];
+static bool tmplog = false;
 
 static void
 sayf(int level, const char *filename, int line, const char *error,
@@ -165,6 +168,43 @@ error:
 }
 
 void
+say_tmplog_init(int nonblock)
+{
+	strcpy(tmplog_filename, "/tmp/tarantoollogXXXXXX");
+
+	sayfd = mkstemp(tmplog_filename);
+	if (sayfd == -1) {
+		sayfd = STDERR_FILENO;
+		say_syserror("Can't open log file: %s", tmplog_filename);
+		_exit(EXIT_FAILURE);
+	}
+
+	booting = false;
+	tmplog = true;
+	if (nonblock) {
+		int flags = fcntl(sayfd, F_GETFL, 0);
+		fcntl(sayfd, F_SETFL, flags | O_NONBLOCK);
+	}
+	return;
+}
+
+static void
+say_tmplog_dump(void)
+{
+	off_t offset = 0;
+	off_t size = lseek(sayfd, 0, SEEK_CUR);
+	if (size == -1) {
+		perror("lseek");
+		return;
+	}
+
+	if (sendfile(STDERR_FILENO, sayfd, &offset, size) != size) {
+		perror("sendfile");
+		return;
+	}
+}
+
+void
 vsay(int level, const char *filename, int line, const char *error, const char *format, va_list ap)
 {
 	size_t p = 0, len = PIPE_BUF;
@@ -214,9 +254,13 @@ vsay(int level, const char *filename, int line, const char *error, const char *f
 	int r = write(sayfd, buf, p + 1);
 	(void)r;
 
-	if (S_FATAL && sayfd != STDERR_FILENO) {
-		r = write(STDERR_FILENO, buf, p + 1);
-		(void)r;
+	if (level == S_FATAL && sayfd != STDERR_FILENO) {
+		if (tmplog) {
+			say_tmplog_dump();
+		} else {
+			r = write(STDERR_FILENO, buf, p + 1);
+			(void)r;
+		}
 	}
 }
 

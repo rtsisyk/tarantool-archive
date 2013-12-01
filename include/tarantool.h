@@ -43,6 +43,8 @@ extern struct tarantool_cfg cfg;
 extern const char *cfg_filename;
 extern char *cfg_filename_fullpath;
 extern char *custom_proc_title;
+extern char **main_argv;
+extern int main_argc;
 int reload_cfg();
 void show_cfg(struct tbuf *out);
 int snapshot(void);

@@ -77,6 +77,7 @@ static pid_t master_pid;
 const char *cfg_filename = NULL;
 char *cfg_filename_fullpath = NULL;
 char *custom_proc_title;
+const char *script_filename = NULL;
 char **main_argv;
 int main_argc;
 static void *main_opt = NULL;
@@ -675,13 +676,13 @@ main(int argc, char **argv)
 	symbols_load(argv[0]);
 #endif
 
-	argv = init_set_proc_title(argc, argv);
-	main_argc = argc;
-	main_argv = argv;
-
 	void *opt = gopt_sort(&argc, (const char **)argv, opt_def);
 	main_opt = opt;
 	say_init(argv[0], &cfg.log_level);
+
+	argv = init_set_proc_title(argc, argv);
+	main_argc = argc;
+	main_argv = argv;
 
 	if (gopt(opt, 'V')) {
 		printf("Tarantool %s\n", tarantool_version());
@@ -719,11 +720,6 @@ main(int argc, char **argv)
 	}
 
 	cfg.log_level += gopt(opt, 'v');
-
-	if (argc != 1) {
-		fprintf(stderr, "Can't parse command line: try --help or -h for help.\n");
-		exit(EX_USAGE);
-	}
 
 	if (cfg_filename[0] != '/') {
 		cfg_filename_fullpath = (char *) malloc(PATH_MAX);
@@ -845,7 +841,11 @@ main(int argc, char **argv)
 		strcat(custom_proc_title, cfg.custom_proc_title);
 	}
 
-	say_logger_init(cfg.logger, cfg.logger_nonblock);
+	if (main_argc > 1 && cfg.logger == NULL) {
+		say_tmplog_init(cfg.logger_nonblock);
+	} else {
+		say_logger_init(cfg.logger, cfg.logger_nonblock);
+	}
 
 	/* main core cleanup routine */
 	atexit(tarantool_free);

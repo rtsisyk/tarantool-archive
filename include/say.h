@@ -56,6 +56,8 @@ void say_init(const char *argv0, int *log_level);
 /* Move logging to a separate process. */
 void say_logger_init(char *logger, int nonblock);
 
+void say_tmplog_init(int nonblock);
+
 void vsay(int level, const char *filename, int line, const char *error,
           const char *format, va_list ap)
           __attribute__ ((format(FORMAT_PRINTF, 5, 0)));

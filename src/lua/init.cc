@@ -184,6 +184,10 @@ lbox_print(struct lua_State *L)
 		}
 	}
 	say_info("%s", tbuf_str(out));
+	if (main_argc > 1) {
+		/* script mode */
+		printf("%s\n", tbuf_str(out));
+	}
 	return 0;
 }
 
@@ -599,6 +603,28 @@ load_init_script(va_list ap)
 	 */
 	fiber_sleep(0.0);
 
+	/*
+	 * Pass command-line arguments to Lua
+	 */
+	try {
+		lua_createtable(L, main_argc, 0);
+		for (int i = 1; i < main_argc; i++) {
+			lua_pushstring(L, main_argv[i]);
+			lua_rawseti(L, -2, i - 1);
+		}
+		lua_setglobal(L, "arg");
+	} catch(...) {
+		panic("Cannot save command line args: %s", lua_tostring(L, -1));
+	}
+
+	if (main_argc > 1) {
+		/* Execute the script file and exit. */
+		if (tarantool_lua_dofile(L, main_argv[1])) {
+			panic("%s", lua_tostring(L, -1));
+		}
+		exit(0);
+	}
+
 	char path[PATH_MAX + 1];
 	snprintf(path, PATH_MAX, "%s/%s",
 		 cfg.script_dir, TARANTOOL_LUA_INIT_SCRIPT);
@@ -667,8 +693,8 @@ tarantool_lua_load_init_script()
 	 * To work this problem around we must run init script in
 	 * a separate fiber.
 	 */
-	struct fiber *loader = fiber_new(TARANTOOL_LUA_INIT_SCRIPT,
-					 load_init_script);
+	struct fiber *loader = fiber_new(main_argc > 1 ?
+		main_argv[1] : TARANTOOL_LUA_INIT_SCRIPT, load_init_script);
 	fiber_call(loader, tarantool_L);
 
 	/*
