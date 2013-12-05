@@ -44,9 +44,12 @@ exec admin 'lua dump(box.http.request("GET", "http://localhost:88/"))'
 exec admin 'lua box.http.request("GET", "http://www.yandex.ru/?text=55,37").body:match("<(html)")'
 
 
-exec admin "lua httpd = box.httpd.new('127.0.0.1', 12345, { templates = '../../src/plugin/httpd/test/templates' })"
+exec admin "lua httpd = box.httpd.new('127.0.0.1', 12345, { app_dir = '../../src/plugin/httpd/test' })"
 exec admin "lua type(httpd:route({path = '/abc/:cde/:def', name = 'test'}, function() end))"
 exec admin "lua type(httpd:route({path = '/abc'}, function() end))"
+exec admin "lua type(httpd:route({path = '/ctxaction'}, 'module.controller#action'))"
+exec admin "lua type(httpd:route({path = '/absentaction'}, 'module.controller#absent'))"
+exec admin "lua type(httpd:route({path = '/absent'}, 'module.absent#action'))"
 exec admin "lua type(httpd:route({path = '/abc/:cde'}, function() end))"
 exec admin "lua type(httpd:route({path = '/abc_:cde_def'}, function() end))"
 exec admin "lua type(httpd:route({path = '/abc-:cde-def'}, function() end))"
@@ -87,7 +90,7 @@ exec admin "lua httpd:url_for('star', { def = '/def_v' }, { a = 'b', c = 'd' })"
 
 
 exec admin "lua ep = httpd:route({ path = '/test', file = 'test.html.el' }, function(cx) cx:render({ title = 'title: 123' }) end)"
-exec admin "lua string.match(httpd.routes[ #httpd.routes ].template, '<head>')"
+exec admin "lua httpd.routes[ #httpd.routes ].template"
 
 exec admin "lua type(httpd:start())"
 
@@ -99,6 +102,39 @@ exec admin "lua string.match(res.body, 'title: 123') == 'title: 123'"
 
 exec admin "lua res = box.http.request('GET', 'http://127.0.0.1:12345/test1')"
 exec admin "lua res.status == 404"
+
+exec admin "lua res = box.http.request('GET', 'http://127.0.0.1:12345/absent')"
+exec admin "lua res.status == 500"
+exec admin "lua string.match(res.body, 'load module') == 'load module'"
+
+exec admin "lua res = box.http.request('GET', 'http://127.0.0.1:12345/ctxaction')"
+exec admin "lua res.status == 200"
+exec admin "lua string.match(res.body, 'Hello, Tarantool') == 'Hello, Tarantool'"
+exec admin "lua string.match(res.body, 'action: action') == 'action: action'"
+exec admin "lua string.match(res.body, 'controller: module[.]controller') == 'controller: module.controller'"
+
+
+
+exec admin "lua res = box.http.request('GET', 'http://127.0.0.1:12345/ctxaction.js')"
+exec admin "lua res.status == 200"
+exec admin "lua string.match(res.body, 'json template js') == 'json template js'"
+
+exec admin "lua res = box.http.request('GET', 'http://127.0.0.1:12345/ctxaction.jsonaaa')"
+exec admin "lua res.status == 500"
+exec admin "lua string.match(res.body, 'No such file') == 'No such file'"
+
+
+
+
+exec admin "lua res = box.http.request('GET', 'http://127.0.0.1:12345/hello.html')"
+exec admin "lua res.status == 200"
+exec admin "lua string.match(res.body, 'static html') == 'static html'"
+
+
+
+exec admin "lua res = box.http.request('GET', 'http://127.0.0.1:12345/absentaction')"
+exec admin "lua res.status == 500"
+exec admin "lua string.match(res.body, 'contain function') == 'contain function'"
 
 exec admin "lua type(httpd:route({path = '/helper', file = 'helper.html.el'}))"
 exec admin "lua res = box.http.request('GET', 'http://127.0.0.1:12345/helper')"
@@ -129,7 +165,7 @@ exec admin "lua type(httpd:route({method = 'POST', path = '/dit', file = 'helper
 exec admin "lua type(httpd:route({method = 'GET', path = '/dit', file = 'helper.html.el'}, function(tx) tx:render({text = 'GET = ' .. tx.req.body}) end ))"
 
 
-exec admin "lua res = box.http.request('POST', 'http://127.0.0.1:12345/dit', {}, 'test')"
+exec admin "lua res = box.http.request('POST', 'http://127.0.0.1:12345/dit', 'test')"
 exec admin "lua res.body == 'POST = test'"
 
 exec admin "lua res = box.http.request('GET', 'http://127.0.0.1:12345/dit')"
@@ -144,13 +180,13 @@ exec admin "lua type(httpd:route({path = '/gparam' }, function(tx) tx:render({te
 exec admin "lua res = box.http.request('GET', 'http://127.0.0.1:12345/gparam?aaa=12343')"
 exec admin "lua res.body == [[PARAM = '{\"aaa\":\"12343\"}']]"
 
-exec admin "lua res = box.http.request('POST', 'http://127.0.0.1:12345/gparam?aaa=12343', {}, '')"
+exec admin "lua res = box.http.request('POST', 'http://127.0.0.1:12345/gparam?aaa=12343', '')"
 exec admin "lua res.body == [[POST PARAM = '{}']]"
-exec admin "lua res = box.http.request('POST', 'http://127.0.0.1:12345/gparam?aaa=12343', {}, 'bbb=4321')"
+exec admin "lua res = box.http.request('POST', 'http://127.0.0.1:12345/gparam?aaa=12343', 'bbb=4321')"
 exec admin "lua res.body == [[POST PARAM = '{\"bbb\":\"4321\"}']]"
 
 exec admin "lua type(httpd:route({path = '/bparam' }, function(tx) tx:render({text = 'PARAM = ' .. dump( tx.req:param() )  }) end ))"
-exec admin "lua res = box.http.request('POST', 'http://127.0.0.1:12345/bparam?aaa=12343', {}, 'bbb=4321')"
+exec admin "lua res = box.http.request('POST', 'http://127.0.0.1:12345/bparam?aaa=12343', 'bbb=4321')"
 exec admin "lua res.body == [[PARAM = '{\"bbb\":\"4321\",\"aaa\":\"12343\"}']]"
 
 
@@ -161,7 +197,7 @@ exec admin "lua dump(res.status)"
 exec admin "lua dump(res.body)"
 exec admin "lua dump(res.headers['set-cookie'])"
 
-exec admin "lua res = box.http.request('GET', 'http://127.0.0.1:12345/cookie', { cookie = 'name=ignore; time=123' })"
+exec admin "lua res = box.http.request('GET', 'http://127.0.0.1:12345/cookie', nil, { headers = { cookie = 'name=ignore; time=123' } })"
 exec admin "lua dump(res.status)"
 exec admin "lua dump(res.body)"
 exec admin "lua hdump(res.headers)"
