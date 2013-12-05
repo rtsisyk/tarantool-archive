@@ -37,7 +37,13 @@
 
 
     box.http = {
-        request = function(method, url, hdrs, body)
+        request = function(method, url, body, opts)
+            if opts == nil then
+                opts = {}
+            end
+
+            local hdrs = opts.headers
+            
             if hdrs == nil then
                 hdrs = {}
             end

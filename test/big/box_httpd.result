@@ -179,7 +179,7 @@ lua box.http.request("GET", "http://www.yandex.ru/?text=55,37").body:match("<(ht
 ---
  - html
 ...
-lua httpd = box.httpd.new('127.0.0.1', 12345, { templates = '../../src/plugin/httpd/test/templates' })
+lua httpd = box.httpd.new('127.0.0.1', 12345, { app_dir = '../../src/plugin/httpd/test' })
 ---
 ...
 lua type(httpd:route({path = '/abc/:cde/:def', name = 'test'}, function() end))
@@ -187,6 +187,18 @@ lua type(httpd:route({path = '/abc/:cde/:def', name = 'test'}, function() end))
  - table
 ...
 lua type(httpd:route({path = '/abc'}, function() end))
+---
+ - table
+...
+lua type(httpd:route({path = '/ctxaction'}, 'module.controller#action'))
+---
+ - table
+...
+lua type(httpd:route({path = '/absentaction'}, 'module.controller#absent'))
+---
+ - table
+...
+lua type(httpd:route({path = '/absent'}, 'module.absent#action'))
 ---
  - table
 ...
@@ -212,7 +224,7 @@ lua type(httpd:route({path = '/abb*def/cde', name = 'star'}, function() end))
 ...
 lua type(httpd:route({path = '/abb*def/cde', name = 'star'}, function() end))
 ---
-error: '[string "-- box.httpd..."]:8: Route with name ''star'' is already exists'
+error: '[string "-- box.httpd..."]:10: Route with name ''star'' is already exists'
 ...
 lua type(httpd:helper('helper_title', function(self, a) return 'Hello, ' .. a end))
 ---
@@ -301,9 +313,9 @@ lua httpd:url_for('star', { def = '/def_v' }, { a = 'b', c = 'd' })
 lua ep = httpd:route({ path = '/test', file = 'test.html.el' }, function(cx) cx:render({ title = 'title: 123' }) end)
 ---
 ...
-lua string.match(httpd.routes[ #httpd.routes ].template, '<head>')
+lua httpd.routes[ #httpd.routes ].template
 ---
- - <head>
+ - nil
 ...
 lua type(httpd:start())
 ---
@@ -328,6 +340,80 @@ lua res = box.http.request('GET', 'http://127.0.0.1:12345/test1')
 ---
 ...
 lua res.status == 404
+---
+ - true
+...
+lua res = box.http.request('GET', 'http://127.0.0.1:12345/absent')
+---
+...
+lua res.status == 500
+---
+ - true
+...
+lua string.match(res.body, 'load module') == 'load module'
+---
+ - true
+...
+lua res = box.http.request('GET', 'http://127.0.0.1:12345/ctxaction')
+---
+...
+lua res.status == 200
+---
+ - true
+...
+lua string.match(res.body, 'Hello, Tarantool') == 'Hello, Tarantool'
+---
+ - true
+...
+lua string.match(res.body, 'action: action') == 'action: action'
+---
+ - true
+...
+lua string.match(res.body, 'controller: module[.]controller') == 'controller: module.controller'
+---
+ - true
+...
+lua res = box.http.request('GET', 'http://127.0.0.1:12345/ctxaction.js')
+---
+...
+lua res.status == 200
+---
+ - true
+...
+lua string.match(res.body, 'json template js') == 'json template js'
+---
+ - true
+...
+lua res = box.http.request('GET', 'http://127.0.0.1:12345/ctxaction.jsonaaa')
+---
+...
+lua res.status == 500
+---
+ - true
+...
+lua string.match(res.body, 'No such file') == 'No such file'
+---
+ - true
+...
+lua res = box.http.request('GET', 'http://127.0.0.1:12345/hello.html')
+---
+...
+lua res.status == 200
+---
+ - true
+...
+lua string.match(res.body, 'static html') == 'static html'
+---
+ - true
+...
+lua res = box.http.request('GET', 'http://127.0.0.1:12345/absentaction')
+---
+...
+lua res.status == 500
+---
+ - true
+...
+lua string.match(res.body, 'contain function') == 'contain function'
 ---
  - true
 ...
@@ -416,7 +502,7 @@ lua type(httpd:route({method = 'GET', path = '/dit', file = 'helper.html.el'}, f
 ---
  - table
 ...
-lua res = box.http.request('POST', 'http://127.0.0.1:12345/dit', {}, 'test')
+lua res = box.http.request('POST', 'http://127.0.0.1:12345/dit', 'test')
 ---
 ...
 lua res.body == 'POST = test'
@@ -445,14 +531,14 @@ lua res.body == [[PARAM = '{"aaa":"12343"}']]
 ---
  - true
 ...
-lua res = box.http.request('POST', 'http://127.0.0.1:12345/gparam?aaa=12343', {}, '')
+lua res = box.http.request('POST', 'http://127.0.0.1:12345/gparam?aaa=12343', '')
 ---
 ...
 lua res.body == [[POST PARAM = '{}']]
 ---
  - true
 ...
-lua res = box.http.request('POST', 'http://127.0.0.1:12345/gparam?aaa=12343', {}, 'bbb=4321')
+lua res = box.http.request('POST', 'http://127.0.0.1:12345/gparam?aaa=12343', 'bbb=4321')
 ---
 ...
 lua res.body == [[POST PARAM = '{"bbb":"4321"}']]
@@ -463,7 +549,7 @@ lua type(httpd:route({path = '/bparam' }, function(tx) tx:render({text = 'PARAM 
 ---
  - table
 ...
-lua res = box.http.request('POST', 'http://127.0.0.1:12345/bparam?aaa=12343', {}, 'bbb=4321')
+lua res = box.http.request('POST', 'http://127.0.0.1:12345/bparam?aaa=12343', 'bbb=4321')
 ---
 ...
 lua res.body == [[PARAM = '{"bbb":"4321","aaa":"12343"}']]
@@ -489,7 +575,7 @@ lua dump(res.headers['set-cookie'])
 ---
  - '"name=value;path=\/cookie, time=a%20nil;path=\/cookie"'
 ...
-lua res = box.http.request('GET', 'http://127.0.0.1:12345/cookie', { cookie = 'name=ignore; time=123' })
+lua res = box.http.request('GET', 'http://127.0.0.1:12345/cookie', nil, { headers = { cookie = 'name=ignore; time=123' } })
 ---
 ...
 lua dump(res.status)
