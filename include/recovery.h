@@ -29,6 +29,7 @@
  * SUCH DAMAGE.
  */
 #include <stdbool.h>
+#include <uuid.h> /* uuid_t */
 #include <netinet/in.h>
 
 #include "tarantool/util.h"
@@ -41,26 +42,24 @@ extern "C" {
 struct fiber;
 struct tbuf;
 
-typedef int (row_handler)(void *, const char *, uint32_t);
+typedef int (row_handler)(void *, const struct log_row *);
 
-/** A "condition variable" that allows fibers to wait when a given
- * LSN makes it to disk.
+/*
+ * Global Log Sequence Number
  */
-
-struct wait_lsn {
-	struct fiber *waiter;
-	int64_t lsn;
+struct lsn {
+	uuid_t uuid;
+	int64_t seq;
 };
 
-void
-wait_lsn_set(struct wait_lsn *wait_lsn, int64_t lsn);
-
-inline static void
-wait_lsn_clear(struct wait_lsn *wait_lsn)
-{
-	wait_lsn->waiter = NULL;
-	wait_lsn->lsn = 0LL;
-}
+/*
+ * Cluster Node
+ */
+struct node {
+	uuid_t uuid;
+	int64_t current_lsn;
+	int64_t confirmed_lsn;
+};
 
 struct wal_writer;
 struct wal_watcher;
@@ -78,8 +77,12 @@ enum wal_mode { WAL_NONE = 0, WAL_WRITE, WAL_FSYNC, WAL_FSYNC_DELAY, WAL_MODE_MA
 /** String constants for the supported modes. */
 extern const char *wal_mode_STRS[];
 
+struct mh_uuidnode_t;
+
 struct recovery_state {
-	int64_t lsn, confirmed_lsn;
+	struct mh_uuidnode_t *cluster;
+	struct node *local_node;
+	int64_t prev_sum; /* a hint for log_dir_find_xlog */
 	/* The WAL we're currently reading/writing from/to. */
 	struct log_io *current_wal;
 	struct log_dir *snap_dir;
@@ -99,7 +102,6 @@ struct recovery_state {
 	uint64_t snap_io_rate_limit;
 	int rows_per_wal;
 	double wal_fsync_delay;
-	struct wait_lsn wait_lsn;
 	enum wal_mode wal_mode;
 
 	bool finalize;
@@ -107,32 +109,32 @@ struct recovery_state {
 
 extern struct recovery_state *recovery_state;
 
-void recovery_init(const char *snap_dirname, const char *xlog_dirname,
-		   row_handler row_handler, void *row_handler_param,
-		   int rows_per_wal);
+int
+recovery_init(const char *snap_dirname, const char *xlog_dirname,
+	      row_handler row_handler, void *row_handler_param,
+	      int rows_per_wal);
 void recovery_update_mode(struct recovery_state *r,
 			  const char *wal_mode, double fsync_delay);
 void recovery_update_io_rate_limit(struct recovery_state *r,
 				   double new_limit);
 void recovery_free();
-void recover_snap(struct recovery_state *, const char *replication_source);
-void recover_existing_wals(struct recovery_state *);
+int recover_snap(struct recovery_state *r, const char *replication_source);
+int recover_wals(struct recovery_state *r);
 void recovery_follow_local(struct recovery_state *r, ev_tstamp wal_dir_rescan_delay);
-void recovery_finalize(struct recovery_state *r);
-int wal_write(struct recovery_state *r, int64_t lsn, uint64_t cookie,
-	      uint16_t op, const char *data, uint32_t len);
-
+int recovery_finalize(struct recovery_state *r);
+int wal_write(struct recovery_state *r, const struct lsn *lsn, uint64_t cookie,
+	      uint16_t op, const char *row, uint32_t row_len);
 void recovery_setup_panic(struct recovery_state *r, bool on_snap_error, bool on_wal_error);
 
-void confirm_lsn(struct recovery_state *r, int64_t lsn, bool is_commit);
-int64_t next_lsn(struct recovery_state *r);
-void set_lsn(struct recovery_state *r, int64_t lsn);
+void
+cluster_dump(struct recovery_state *r);
 
-void recovery_wait_lsn(struct recovery_state *r, int64_t lsn);
+struct node *
+cluster_node(struct recovery_state *r, const uuid_t uuid);
 
-int read_log(const char *filename,
-	     row_handler xlog_handler, row_handler snap_handler,
-	     void *param);
+int
+recovery_set_lsns(struct recovery_state *r, const struct lsn *lsn,
+		  uint32_t count);
 
 void recovery_follow_remote(struct recovery_state *r, const char *addr);
 void recovery_stop_remote(struct recovery_state *r);
@@ -155,11 +157,62 @@ struct fio_batch;
 void snapshot_write_row(struct log_io *i, struct fio_batch *batch,
 			const char *metadata, size_t metadata_size,
 			const char *data, size_t data_size);
-void snapshot_save(struct recovery_state *r,
-		   void (*loop) (struct log_io *, struct fio_batch *));
+int
+snapshot_save(struct recovery_state *r,
+	      void (*loop) (struct log_io *, struct fio_batch *));
 
 void
-init_storage(struct log_dir *dir, const char *replication_source);
+init_storage(const char *snap_dirname, const char *replication_source);
+
+const char *
+uuid_hex(const uuid_t uuid);
+
+
+/*
+ * Map: (uuid) => (struct node)
+ */
+
+#include "third_party/PMurHash.h"
+
+static inline bool
+mh_uuidnode_eq_key(const uuid_t key, const struct node *node, void *arg)
+{
+	(void) arg;
+	return memcmp(key, node->uuid, sizeof(uuid_t)) == 0;
+}
+
+static inline bool
+mh_uuidnode_eq(const struct node *node_a, const struct node *node_b, void *arg)
+{
+	(void) arg;
+	return memcmp(node_a->uuid, node_b->uuid, sizeof(uuid_t)) == 0;
+}
+
+static inline uint32_t
+mh_uuidnode_hash_key(const uuid_t key, void *arg)
+{
+	(void) arg;
+	return *(uint32_t *) key;
+}
+
+static inline uint32_t
+mh_uuidnode_hash(const struct node *node, void *arg)
+{
+	(void) arg;
+	return *(uint32_t *) node->uuid;
+}
+
+#define mh_name _uuidnode
+#define mh_key_t const uuid_t
+#define mh_node_t struct node *
+#define mh_arg_t void *
+#define mh_hash(a, arg) mh_uuidnode_hash(*a, arg)
+#define mh_hash_key(a, arg) mh_uuidnode_hash_key(a, arg)
+#define mh_eq(a, b, arg) mh_uuidnode_eq(*a, *b, arg)
+#define mh_eq_key(key, node, arg) mh_uuidnode_eq_key(key, *node, arg)
+#include <mhash.h>
+
+#define mh_uuidnode(hash, k) (*mh_uuidnode_node(hash, k))
 
 #if defined(__cplusplus)
 } /* extern "C" */

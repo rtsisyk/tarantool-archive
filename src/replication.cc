@@ -49,6 +49,7 @@ extern "C" {
 #include "recovery.h"
 #include "log_io.h"
 #include "evio.h"
+#include "scoped_guard.h"
 
 /** Replication topology
  * ----------------------
@@ -623,12 +624,16 @@ replication_relay_recv(struct ev_io *w, int __attribute__((unused)) revents)
 
 /** Send a single row to the client. */
 static int
-replication_relay_send_row(void *param, const char *row, uint32_t rowlen)
+replication_relay_send_row(void *param, const struct log_row *row)
 {
+	say_debug("send row: %s, %lld", uuid_hex(row->lsn.uuid),
+		  (long long) row->lsn.seq);
+
+	size_t rowlen = log_row_size(row);
 	int client_sock = (int) (intptr_t) param;
 	ssize_t bytes, len = rowlen;
 	while (len > 0) {
-		bytes = write(client_sock, row, len);
+		bytes = write(client_sock, row, rowlen);
 		if (bytes < 0) {
 			if (errno == EPIPE) {
 				/* socket closed on opposite site */
@@ -650,25 +655,22 @@ static void
 replication_relay_send_snapshot(int client_sock)
 {
 	FDGuard guard_replica(client_sock);
-	struct log_dir dir = snap_dir;
-	dir.dirname = cfg.snap_dir;
-	int64_t lsn = greatest_lsn(&dir);
-	const char *filename = format_filename(&dir, lsn, NONE);
-	int snapshot = open(filename, O_RDONLY);
-	if (snapshot < 0)
-		panic_syserror("can't find/open snapshot");
 
-	FDGuard guard_snapshot(snapshot);
+	struct log_io *l = log_dir_find_snap(recovery_state->snap_dir);
+	if (l == NULL)
+		panic("cannot find snapshot");
 
-	struct stat st;
-	if (fstat(snapshot, &st) != 0)
-		panic_syserror("fstat");
+	auto scoped_guard = make_scoped_guard([&] {
+		log_io_close(&l);
+	});
 
-	uint64_t header[2];
-	header[0] = lsn;
-	header[1] = st.st_size;
-	sio_writen(client_sock, header, sizeof(header));
-	sio_sendfile(client_sock, snapshot, NULL, header[1]);
+	int snapshot = fileno(l->f);
+	off_t end_off = lseek(snapshot, 0, SEEK_END);
+	lseek(snapshot, 0, SEEK_SET);
+
+	uint64_t header = end_off;
+	sio_writen(client_sock, &header, sizeof(header));
+	sio_sendfile(client_sock, fileno(l->f), NULL, end_off);
 
 	exit(EXIT_SUCCESS);
 }
@@ -679,7 +681,6 @@ replication_relay_loop(int client_sock)
 {
 	char name[FIBER_NAME_MAX];
 	struct sigaction sa;
-	int64_t lsn;
 
 	/* Set process title and fiber name.
 	 * Even though we use only the main fiber, the logger
@@ -720,6 +721,12 @@ replication_relay_loop(int client_sock)
 		say_syserror("sigaction");
 	}
 
+	/* Initialize the recovery process */
+	recovery_init(cfg.snap_dir, cfg.wal_dir,
+		      replication_relay_send_row, (void *)(intptr_t) client_sock,
+		      INT32_MAX);
+	auto scoped_guard = make_scoped_guard([=] { recovery_free(); });
+
 	replication_handshake(client_sock, "replica");
 	uint32_t request;
 	sio_readn(client_sock, &request, sizeof(request));
@@ -730,7 +737,6 @@ replication_relay_loop(int client_sock)
 		say_error("unknown replica request:  %d", request);
 		exit(EXIT_FAILURE);
 	}
-	sio_readn(client_sock, &lsn, sizeof(lsn));
 
 	/* init libev events handlers */
 	ev_default_loop(0);
@@ -745,19 +751,25 @@ replication_relay_loop(int client_sock)
 	ev_io_init(&sock_read_ev, replication_relay_recv, client_sock, EV_READ);
 	ev_io_start(&sock_read_ev);
 
-	/* Initialize the recovery process */
-	recovery_init(cfg.snap_dir, cfg.wal_dir,
-		      replication_relay_send_row, (void *)(intptr_t) client_sock,
-		      INT32_MAX);
-	/*
-	 * Note that recovery starts with lsn _NEXT_ to
-	 * the confirmed one.
-	 */
-	recovery_state->lsn = recovery_state->confirmed_lsn = lsn - 1;
-	recover_existing_wals(recovery_state);
-	/* Found nothing. */
-	if (recovery_state->lsn == lsn - 1)
-		say_error("can't find WAL containing record with lsn: %" PRIi64, lsn);
+	uuid_t remote_uuid;
+	uint32_t count = 0;
+	sio_readn(client_sock, remote_uuid, sizeof(uuid_t));
+	sio_readn(client_sock, &count, sizeof(count));
+	say_info("remote UUID is %s", uuid_hex(remote_uuid));
+
+	struct lsn *lsns = (struct lsn *) region_alloc(&fiber->gc,
+		count * sizeof(*lsns));
+	sio_readn(client_sock, lsns, count * sizeof(*lsns));
+
+	say_warn("replica handshake");
+	for (uint32_t i = 0; i < count; i++) {
+		say_warn("%s, %lld", uuid_hex(lsns[i].uuid),
+			 (long long) lsns[i].seq);
+	}
+
+	recovery_set_lsns(recovery_state, lsns, count);
+	cluster_dump(recovery_state);
+	recover_wals(recovery_state);
 	recovery_follow_local(recovery_state, 0.1);
 
 	ev_loop(0);

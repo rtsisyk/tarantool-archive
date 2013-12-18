@@ -30,6 +30,7 @@
  */
 #include "tarantool/util.h"
 #include <stdbool.h>
+#include "recovery.h" /* struct lsn */
 
 struct txn;
 struct port;
@@ -127,10 +128,13 @@ struct request
 	uint32_t len;
 
 	void (*execute)(const struct request *, struct txn *, struct port *);
+
+	/* Used when request received from replication */
+	const struct lsn *lsn;
 };
 
 void
-request_create(struct request *request, uint32_t type, const char *data,
-	       uint32_t len);
+request_create(struct request *request, const struct lsn *lsn, uint32_t type,
+	       const char *data, uint32_t len);
 
 #endif /* TARANTOOL_BOX_REQUEST_H_INCLUDED */

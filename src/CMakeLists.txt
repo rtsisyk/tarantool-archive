@@ -11,6 +11,7 @@ include_directories(${LIBEV_INCLUDE_DIR})
 include_directories(${LIBEIO_INCLUDE_DIR})
 include_directories(${LIBCORO_INCLUDE_DIR})
 include_directories(${LIBGOPT_INCLUDE_DIR})
+include_directories(${LIBUUID_INCLUDE_DIRS})
 
 # Require pthread globally if compiling with GCC
 if (CMAKE_COMPILER_IS_GNUCC)
@@ -109,6 +110,7 @@ list(APPEND common_libraries
     ${LIBCJSON_LIBRARIES}
     ${LIBYAML_LIBRARIES}
     ${LUAJIT_LIB}
+    ${LIBUUID_LIBRARIES}
     misc
 )
 

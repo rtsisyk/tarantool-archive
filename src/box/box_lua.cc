@@ -1135,7 +1135,7 @@ lbox_process(lua_State *L)
 	struct port *port_lua = port_lua_create(L);
 	try {
 		struct request request;
-		request_create(&request, op, req, sz);
+		request_create(&request, NULL, op, req, sz);
 		box_process(port_lua, &request);
 
 		/*

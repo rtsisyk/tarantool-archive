@@ -95,7 +95,7 @@ CXX_FLAGS: flags
 # can be relative to work_dir.
 
 tarantool_box --config=bug726778.cfg --init-storage
-tarantool_box: saving snapshot `snapshots/00000000000000000001.snap'
+tarantool_box: saving snapshot `snapshots/bootstrap.snap'
 tarantool_box: done
 
 #

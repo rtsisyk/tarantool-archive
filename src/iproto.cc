@@ -659,7 +659,7 @@ iproto_reply(struct iproto_port *port, box_process_func callback,
 	iproto_port_init(port, out, header);
 	try {
 		struct request request;
-		request_create(&request, header->msg_code, body, header->len);
+		request_create(&request, NULL, header->msg_code, body, header->len);
 		callback((struct port *) port, &request);
 	} catch (const ClientError& e) {
 		if (port->reply.found)

@@ -49,7 +49,6 @@ extern "C" {
 #include "request.h"
 #include "txn.h"
 
-static void process_replica(struct port *port, struct request *request);
 static void process_ro(struct port *port, struct request *request);
 static void process_rw(struct port *port, struct request *request);
 box_process_func box_process = process_ro;
@@ -79,6 +78,7 @@ static void
 process_rw(struct port *port, struct request *request)
 {
 	struct txn *txn = txn_begin();
+	txn->lsn = request->lsn;
 
 	try {
 		stat_collect(stat_base, request->type, 1);
@@ -94,16 +94,6 @@ process_rw(struct port *port, struct request *request)
 }
 
 static void
-process_replica(struct port *port, struct request *request)
-{
-	if (!request_is_select(request->type)) {
-		tnt_raise(ClientError, ER_NONMASTER,
-			  cfg.replication_source);
-	}
-	return process_rw(port, request);
-}
-
-static void
 process_ro(struct port *port, struct request *request)
 {
 	if (!request_is_select(request->type))
@@ -112,23 +102,15 @@ process_ro(struct port *port, struct request *request)
 }
 
 static int
-recover_row(void *param __attribute__((unused)), const char *row, uint32_t rowlen)
+recover_row(void *param __attribute__((unused)), const struct log_row *row)
 {
-	/* drop wal header */
-	if (rowlen < sizeof(struct row_header)) {
-		say_error("incorrect row header: expected %zd, got %zd bytes",
-			  sizeof(struct row_header), (size_t) rowlen);
-		return -1;
-	}
-
 	try {
-		const char *end = row + rowlen;
-		row += sizeof(struct row_header);
-		(void) pick_u16(&row, end); /* drop tag - unused. */
-		(void) pick_u64(&row, end); /* drop cookie */
-		uint16_t op = pick_u16(&row, end);
+		const char *data = row->data;
+		const char *end = data + row->len;
+		uint16_t op = pick_u16(&data, end);
 		struct request request;
-		request_create(&request, op, row, end - row);
+		const struct lsn *lsn = (row->lsn.seq != 0) ? &row->lsn : NULL;
+		request_create(&request, lsn, op, data, end - data);
 		process_rw(&null_port, &request);
 	} catch (const Exception& e) {
 		e.log();
@@ -141,10 +123,8 @@ recover_row(void *param __attribute__((unused)), const char *row, uint32_t rowle
 static void
 box_enter_master_or_replica_mode(struct tarantool_cfg *conf)
 {
+	box_process = process_rw;
 	if (conf->replication_source != NULL) {
-		box_process = process_replica;
-
-		recovery_wait_lsn(recovery_state, recovery_state->lsn);
 		if (strcmp(conf->replication_protocol, "1.5") == 0) {
 			recovery_follow_remote_1_5(recovery_state,
 						   conf->replication_source);
@@ -158,8 +138,6 @@ box_enter_master_or_replica_mode(struct tarantool_cfg *conf)
 		title("replica/%s%s", conf->replication_source,
 		      custom_proc_title);
 	} else {
-		box_process = process_rw;
-
 		snprintf(status, sizeof(status), "primary%s",
 			 custom_proc_title);
 		title("primary%s", custom_proc_title);
@@ -171,7 +149,8 @@ box_enter_master_or_replica_mode(struct tarantool_cfg *conf)
 void
 box_leave_local_standby_mode(void *data __attribute__((unused)))
 {
-	recovery_finalize(recovery_state);
+	if (recovery_finalize(recovery_state) != 0)
+		panic("unable to successfully finalize recovery");
 
 	recovery_update_mode(recovery_state, cfg.wal_mode,
 			     cfg.wal_fsync_delay);
@@ -292,9 +271,11 @@ box_init()
 
 	stat_base = stat_register(requests_strs, requests_MAX);
 
-	recover_snap(recovery_state, cfg.replication_source);
+	if (recover_snap(recovery_state, cfg.replication_source) != 0)
+		panic("cannot recover snap");
 	space_end_recover_snapshot();
-	recover_existing_wals(recovery_state);
+	if (recover_wals(recovery_state) != 0)
+		panic("cannot recover xlogs");
 	space_end_recover();
 
 	stat_cleanup(stat_base, requests_MAX);

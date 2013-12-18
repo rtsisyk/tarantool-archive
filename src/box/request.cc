@@ -221,8 +221,8 @@ request_name(uint32_t type)
 }
 
 void
-request_create(struct request *request, uint32_t type, const char *data,
-	       uint32_t len)
+request_create(struct request *request, const struct lsn *lsn, uint32_t type,
+	       const char *data, uint32_t len)
 {
 	if (request_check_type(type)) {
 		say_error("Unsupported request = %" PRIi32 "", type);
@@ -234,6 +234,7 @@ request_create(struct request *request, uint32_t type, const char *data,
 	request->data = data;
 	request->len = len;
 	request->flags = 0;
+	request->lsn = lsn;
 
 	const char **reqpos = &data;
 	const char *reqend = data + len;

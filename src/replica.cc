@@ -40,40 +40,37 @@
 #include "recovery.h"
 
 static void
-remote_apply_row(struct recovery_state *r, const char *row, uint32_t rowlne);
+remote_apply_row(struct recovery_state *r, const struct log_row *row);
 
-static const char *
-remote_read_row(struct ev_io *coio, struct iobuf *iobuf, uint32_t *rowlen)
+static struct log_row *
+remote_read_row(struct ev_io *coio, struct iobuf *iobuf)
 {
 	struct ibuf *in = &iobuf->in;
-	ssize_t to_read = sizeof(struct row_header) - ibuf_size(in);
+	ssize_t to_read = sizeof(struct log_row) - ibuf_size(in);
 
 	if (to_read > 0) {
 		ibuf_reserve(in, cfg_readahead);
 		coio_breadn(coio, in, to_read);
 	}
 
-	ssize_t request_len = row_header(in->pos)->len
-		+ sizeof(struct row_header);
+	struct log_row *row = (struct log_row *) in->pos;
+	ssize_t request_len = log_row_size(row);
 	to_read = request_len - ibuf_size(in);
 
 	if (to_read > 0)
 		coio_breadn(coio, in, to_read);
 
-	const char *row = in->pos;
-	*rowlen = request_len;
 	in->pos += request_len;
 	return row;
 }
 
 static void
-remote_connect(struct ev_io *coio, struct sockaddr_in *remote_addr,
-	       int64_t initial_lsn, const char **err)
+remote_connect(struct ev_io *coio, struct recovery_state *r, const char **err)
 {
 	evio_socket(coio, AF_INET, SOCK_STREAM, IPPROTO_TCP);
 
 	*err = "can't connect to master";
-	coio_connect(coio, remote_addr);
+	coio_connect(coio, &r->remote->addr);
 
 	uint32_t greeting[3] = { xlog_format, tarantool_version_id(), 0 };
 	uint32_t master_greeting[3];
@@ -84,12 +81,34 @@ remote_connect(struct ev_io *coio, struct sockaddr_in *remote_addr,
 
 	struct send_request {
 		uint32_t request_type;
-		int64_t initial_lsn;
-	} __attribute__((packed)) send_request = { RPL_GET_WAL, initial_lsn };
-	coio_write(coio, &send_request, sizeof(send_request));
+		uuid_t uuid;
+		uint32_t lsns_count;
+		struct lsn lsns[];
+	} __attribute__((packed));
+
+	size_t req_len = sizeof(struct send_request) +
+			sizeof(struct lsn) * mh_size(r->cluster);
+
+	RegionGuard region_guard(&fiber->gc);
+	struct send_request *req = (struct send_request *)
+		region_alloc(&fiber->gc, req_len);
+	memcpy(req->uuid, r->local_node->uuid, sizeof(uuid_t));
+	req->request_type = RPL_GET_WAL;
+	req->lsns_count = mh_size(r->cluster);
+	uint32_t k;
+	struct lsn *curlsn = req->lsns;
+	struct lsn *endlsn = curlsn + req->lsns_count;
+	mh_foreach(r->cluster, k) {
+		struct node *node = mh_uuidnode(r->cluster, k);
+		memcpy(curlsn->uuid, node->uuid, sizeof(uuid_t));
+		curlsn->seq = node->current_lsn;
+		curlsn++;
+	}
+	assert(curlsn == endlsn);
+
+	coio_write(coio, req, req_len);
 
 	say_crit("successfully connected to master");
-	say_crit("starting replication from lsn: %" PRIi64, initial_lsn);
 }
 
 static void
@@ -110,20 +129,18 @@ pull_from_remote(va_list ap)
 			if (! evio_is_active(&coio)) {
 				if (iobuf == NULL)
 					iobuf = iobuf_new(fiber_name(fiber));
-				remote_connect(&coio, &r->remote->addr,
-					       r->confirmed_lsn + 1, &err);
+				remote_connect(&coio, r, &err);
 				warning_said = false;
 			}
 			err = "can't read row";
-			uint32_t rowlen;
-			const char *row = remote_read_row(&coio, iobuf, &rowlen);
+			const struct log_row *row = remote_read_row(&coio, iobuf);
 			fiber_setcancellable(false);
 			err = NULL;
 
-			r->remote->recovery_lag = ev_now() - row_header(row)->tm;
+			r->remote->recovery_lag = ev_now() - row->tm;
 			r->remote->recovery_last_update_tstamp = ev_now();
 
-			remote_apply_row(r, row, rowlen);
+			remote_apply_row(r, row);
 
 			iobuf_gc(iobuf);
 			fiber_gc();
@@ -146,16 +163,20 @@ pull_from_remote(va_list ap)
 }
 
 static void
-remote_apply_row(struct recovery_state *r, const char *row, uint32_t rowlen)
+remote_apply_row(struct recovery_state *r, const struct log_row *row)
 {
-	int64_t lsn = row_header(row)->lsn;
+	say_debug("remote apply %s, %lld", uuid_hex(row->lsn.uuid),
+		 (long long) row->lsn.seq);
 
-	assert(*(uint16_t*)(row + sizeof(struct row_header)) == WAL);
+	if (memcmp(row->lsn.uuid, r->local_node->uuid, sizeof(uuid_t)) == 0) {
+		say_debug("skip row with local uuid %s, %lld received from remote",
+			  uuid_hex(r->local_node->uuid),
+			  (long long) r->local_node->confirmed_lsn);
+		return;
+	}
 
-	if (r->row_handler(r->row_handler_param, row, rowlen) < 0)
+	if (r->row_handler(r->row_handler_param, row) < 0)
 		panic("replication failure: can't apply row");
-
-	set_lsn(r, lsn);
 }
 
 void

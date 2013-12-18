@@ -42,12 +42,13 @@ panic_on_wal_error doens't work for duplicate key errors
 
 box.space[0]:select(0, 1)
 ---
-- [1, 2]
+- [1, 'one']
 ...
 box.space[0]:select(0, 2)
 ---
+- [2, 'two']
 ...
-#box.space[0]
+#box.space[0].index[0].idx
 ---
-- 0
+- 2
 ...

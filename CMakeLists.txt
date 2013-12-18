@@ -325,6 +325,13 @@ libyaml_build()
 add_dependencies(build_bundled_libs yaml)
 
 #
+# LibUUID
+#
+
+set(LIBUUID_FIND_REQUIRED)
+find_package(LibUUID)
+
+#
 # Third-Party misc
 #
 

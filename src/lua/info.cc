@@ -40,6 +40,7 @@ extern "C" {
 #include <say.h>
 #include <string.h>
 #include <recovery.h>
+#include <log_io.h>
 #include "tarantool.h"
 #include "box/box.h"
 
@@ -67,7 +68,24 @@ lbox_info_recovery_last_update_tstamp(struct lua_State *L)
 static int
 lbox_info_lsn(struct lua_State *L)
 {
-	luaL_pushnumber64(L, recovery_state->confirmed_lsn);
+	luaL_pushnumber64(L,recovery_state->local_node->confirmed_lsn);
+	return 1;
+}
+
+static int
+lbox_info_lsns(struct lua_State *L)
+{
+	mh_uuidnode_t *nodes = recovery_state->cluster;
+	uint32_t count = mh_size(nodes);
+	lua_createtable(L, count, 0);
+	uint32_t k;
+	mh_foreach(nodes, k) {
+		struct node *node = mh_uuidnode(nodes, k);
+		lua_pushlstring(L, uuid_hex(node->uuid), 32);
+		luaL_pushnumber64(L, node->confirmed_lsn);
+		lua_settable(L, -3);
+	}
+
 	return 1;
 }
 
@@ -98,6 +116,7 @@ lbox_info_dynamic_meta [] =
 	{"recovery_lag", lbox_info_recovery_lag},
 	{"recovery_last_update", lbox_info_recovery_last_update_tstamp},
 	{"lsn", lbox_info_lsn},
+	{"lsns", lbox_info_lsns},
 	{"status", lbox_info_status},
 	{"uptime", lbox_info_uptime},
 	{"snapshot_pid", lbox_info_snapshot_pid},

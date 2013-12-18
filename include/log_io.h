@@ -33,17 +33,14 @@
 #include <stdbool.h>
 #include "tarantool/util.h"
 #include "tarantool_ev.h"
+#include "recovery.h" /* struct lsn, mh_uuidnode_t */
 
 extern const uint32_t xlog_format;
-
-enum log_format { WAL = 65534 };
 
 enum log_mode {
 	LOG_READ,
 	LOG_WRITE
 };
-
-enum log_suffix { NONE, INPROGRESS };
 
 struct log_dir {
 	bool panic_if_error;
@@ -65,12 +62,12 @@ struct log_dir {
 extern struct log_dir snap_dir;
 extern struct log_dir wal_dir;
 
-int64_t
-greatest_lsn(struct log_dir *dir);
-char *
-format_filename(struct log_dir *dir, int64_t lsn, enum log_suffix suffix);
-int64_t
-find_including_file(struct log_dir *dir, int64_t target_lsn);
+struct log_io *
+log_dir_find_xlog(struct log_dir *dir, struct mh_uuidnode_t *nodes,
+		  int64_t prev_sum);
+
+struct log_io *
+log_dir_find_snap(struct log_dir *dir);
 
 struct log_io {
 	struct log_dir *dir;
@@ -81,18 +78,43 @@ struct log_io {
 	int retry;
 	char filename[PATH_MAX + 1];
 
-	bool is_inprogress;
+	/* header/footer has been written (just for debugging) */
+	bool header;
+	bool footer;
+
+	/* used by log_io_scan */
+	struct log_io *file;
+	int64_t lsns_sum;
+	uint32_t lsns_count;
+	const struct lsn *lsns;
 };
 
 struct log_io *
-log_io_open_for_read(struct log_dir *dir, int64_t lsn, enum log_suffix suffix);
+log_io_open_for_read(struct log_dir *dir, const char *filename);
+
 struct log_io *
-log_io_open_for_write(struct log_dir *dir, int64_t lsn, enum log_suffix suffix);
-struct log_io *
-log_io_open(struct log_dir *dir, enum log_mode mode,
-	    const char *filename, enum log_suffix suffix, FILE *file);
+log_io_open_for_write(struct log_dir *dir, mh_uuidnode_t *nodes);
+
 int
 log_io_sync(struct log_io *l);
+
+const struct lsn *
+log_io_read_header(struct log_io *l, uint32_t *p_count);
+
+const struct lsn *
+log_io_read_footer(struct log_io *l, uint32_t *p_count);
+
+int
+log_io_write_header(struct log_io *l, mh_uuidnode_t *nodes,
+		    const struct node *local_node, bool write_current);
+
+int
+log_io_write_footer(struct log_io *l, mh_uuidnode_t *lsns,
+		    const struct node *local_node, bool write_current);
+
+int
+inprogress_log_rename(struct log_io *l);
+
 int
 log_io_close(struct log_io **lptr);
 void
@@ -111,57 +133,42 @@ log_io_cursor_open(struct log_io_cursor *i, struct log_io *l);
 void
 log_io_cursor_close(struct log_io_cursor *i);
 
-const char *
-log_io_cursor_next(struct log_io_cursor *i, uint32_t *rowlen);
+const struct log_row *
+log_io_cursor_next(struct log_io_cursor *i);
 
 typedef uint32_t log_magic_t;
 
-struct row_header {
-	uint32_t header_crc32c;
-	int64_t lsn;
+struct log_row {
+	log_magic_t marker;
+	uint32_t header_crc32c; /* calculated for the header block */
+	/* {{{ header block */
+	char header[0]; /* start of the header */
+	struct lsn lsn;
 	double tm;
 	uint32_t len;
-	uint32_t data_crc32c;
-} __attribute__((packed));
-
-static inline struct row_header *row_header(const char *t)
-{
-	return (struct row_header *)t;
-}
-
-static inline void
-row_header_fill(struct row_header *header, int64_t lsn, size_t data_len)
-{
-	header->lsn = lsn;
-	header->tm = ev_now();
-	header->len = data_len;
-}
-
-void
-row_header_sign(struct row_header *header);
-
-struct wal_row {
-	log_magic_t marker;
-	struct row_header header;
 	uint16_t tag;
 	uint64_t cookie;
-	uint8_t data[];
+	uint32_t data_crc32c; /* calculated for data */
+	/* }}} */
+	char data[0];   /* start of the data */
 } __attribute__((packed));
 
 void
-wal_row_fill(struct wal_row *row, int64_t lsn, uint64_t cookie,
+log_row_sign(struct log_row *row);
+
+void
+log_row_fill(struct log_row *row, const struct lsn *lsn, uint64_t cookie,
 	     const char *metadata, size_t metadata_len,
 	     const char *data, size_t data_len);
 
 static inline size_t
-wal_row_size(struct wal_row *row)
+log_row_size(const struct log_row *row)
 {
-	return sizeof(row->marker) + sizeof(struct row_header) + row->header.len;
+	return sizeof(struct log_row) + row->len;
 }
 
-int
-inprogress_log_unlink(char *filename);
-int
-inprogress_log_rename(struct log_io *l);
+/** @todo remove path_join */
+const char *
+path_join(const char *dir, const char *name);
 
 #endif /* TARANTOOL_LOG_IO_H_INCLUDED */

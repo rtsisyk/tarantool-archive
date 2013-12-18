@@ -27,6 +27,7 @@
  * SUCH DAMAGE.
  */
 #include "recovery.h"
+#include "tarantool.h"
 
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -46,15 +47,15 @@ static const char *
 remote_read_row_1_5(struct ev_io *coio, struct iobuf *iobuf, uint32_t *rowlen)
 {
 	struct ibuf *in = &iobuf->in;
-	ssize_t to_read = sizeof(struct row_header) - ibuf_size(in);
+	ssize_t to_read = sizeof(struct log_row) - ibuf_size(in);
 
 	if (to_read > 0) {
 		ibuf_reserve(in, cfg_readahead);
 		coio_breadn(coio, in, to_read);
 	}
 
-	ssize_t request_len = row_header(in->pos)->len
-		+ sizeof(struct row_header);
+	ssize_t request_len = ((const struct log_row *) in->pos)->len
+		+ sizeof(struct log_row);
 	to_read = request_len - ibuf_size(in);
 
 	if (to_read > 0)
@@ -92,6 +93,8 @@ remote_connect_1_5(struct ev_io *coio, struct sockaddr_in *remote_addr,
 static void
 pull_from_remote_1_5(va_list ap)
 {
+	panic("not implemented");
+
 	struct recovery_state *r = va_arg(ap, struct recovery_state *);
 	struct ev_io coio;
 	struct iobuf *iobuf = NULL;
@@ -107,8 +110,7 @@ pull_from_remote_1_5(va_list ap)
 			if (! evio_is_active(&coio)) {
 				if (iobuf == NULL)
 					iobuf = iobuf_new(fiber_name(fiber));
-				remote_connect_1_5(&coio, &r->remote->addr,
-					       r->confirmed_lsn + 1, &err);
+				remote_connect_1_5(&coio, &r->remote->addr,0 , &err);
 				warning_said = false;
 			}
 			err = "can't read row";
@@ -117,7 +119,7 @@ pull_from_remote_1_5(va_list ap)
 			fiber_setcancellable(false);
 			err = NULL;
 
-			r->remote->recovery_lag = ev_now() - row_header(row)->tm;
+			r->remote->recovery_lag = ev_now() - ((const struct log_row *) row)->tm;
 			r->remote->recovery_last_update_tstamp = ev_now();
 
 			remote_apply_row_1_5(r, row, rowlen);
@@ -145,14 +147,19 @@ pull_from_remote_1_5(va_list ap)
 static void
 remote_apply_row_1_5(struct recovery_state *r, const char *row, uint32_t rowlen)
 {
-	int64_t lsn = row_header(row)->lsn;
-
-	assert(*(uint16_t*)(row + sizeof(struct row_header)) == WAL);
+	panic("not implemented");
+	(void) row;
+	(void) rowlen;
+	(void) r;
+#if 0
+	assert(*(uint16_t*)(row + sizeof(struct log_row)) == WAL);
 
 	if (r->row_handler(r->row_handler_param, row, rowlen) < 0)
 		panic("replication failure: can't apply row");
 
-	set_lsn(r, lsn);
+	panic("set_lsn");
+	// set_lsn(r, log_row(row)->lsn.seq);
+#endif
 }
 
 void

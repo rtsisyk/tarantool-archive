@@ -30,6 +30,7 @@
  */
 #include "index.h"
 #include "trigger.h"
+#include "recovery.h" /* struct lsn */
 
 struct tuple;
 struct space;
@@ -47,6 +48,7 @@ struct txn {
 	const char *data;
 	uint32_t len;
 	uint16_t op;
+	const struct lsn *lsn;
 };
 
 struct txn *txn_begin();

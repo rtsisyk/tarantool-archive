@@ -118,11 +118,11 @@ server.stop()
 shutil.copy(abspath("box/dup_key1.xlog"),
             os.path.join(vardir, "00000000000000000002.xlog"))
 shutil.copy(abspath("box/dup_key2.xlog"),
-           os.path.join(vardir, "00000000000000000004.xlog"))
+           os.path.join(vardir, "00000000000000000005.xlog"))
 server.start()
 admin("box.space[0]:select(0, 1)")
 admin("box.space[0]:select(0, 2)")
-admin("#box.space[0]")
+admin("#box.space[0].index[0].idx")
 
 # cleanup
 server.stop()

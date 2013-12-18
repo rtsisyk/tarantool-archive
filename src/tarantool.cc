@@ -329,7 +329,6 @@ snapshot(void)
 	if (snapshot_pid)
 		return EINPROGRESS;
 
-
 	pid_t p = fork();
 	if (p < 0) {
 		say_syserror("fork");
@@ -354,14 +353,11 @@ snapshot(void)
 	 * parent stdio buffers at exit().
 	 */
 	close_all_xcpt(1, sayfd);
-	/*
-	 * We must avoid double destruction of tuples on exit.
-	 * Since there is no way to remove existing handlers
-	 * registered in the master process, and snapshot_save()
-	 * may call exit(), push a top-level handler which will do
-	 * _exit() for us.
-	 */
-	snapshot_save(recovery_state, box_snapshot);
+	if (snapshot_save(recovery_state, box_snapshot) != 0) {
+		say_error("cannot save snapshot");
+		exit(EXIT_FAILURE);
+		return 1;
+	}
 
 	exit(EXIT_SUCCESS);
 	return 0;
@@ -830,9 +826,7 @@ main(int argc, char **argv)
 	}
 
 	if (gopt(opt, 'I')) {
-		struct log_dir dir = snap_dir;
-		dir.dirname = cfg.snap_dir;
-		init_storage(&dir, NULL);
+		init_storage(cfg.snap_dir, NULL);
 		exit(EXIT_SUCCESS);
 	}
 
