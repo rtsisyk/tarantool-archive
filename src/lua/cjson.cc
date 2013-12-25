@@ -39,10 +39,20 @@ int luaopen_cjson(lua_State *l);
 int
 tarantool_lua_cjson_init(struct lua_State *L)
 {
+	luaopen_cjson(L);
 	lua_getfield(L, LUA_GLOBALSINDEX, "box");
 	lua_pushstring(L, "cjson");
-	luaopen_cjson(L);
+	lua_pushvalue(L, -3);
 	lua_settable(L, -3);
 	lua_pop(L, 1);
+
+	lua_getfield(L, LUA_REGISTRYINDEX, "_LOADED");
+	lua_pushstring(L, "cjson");
+	lua_pushvalue(L, -3);
+	lua_settable(L, -3);
+	lua_pop(L, 1);
+
+	lua_pop(L, 1);
+
 	return 0;
 }

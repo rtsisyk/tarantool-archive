@@ -55,6 +55,10 @@ void
 tarantool_lua_register_type(struct lua_State *L, const char *type_name,
 			    const struct luaL_Reg *methods);
 
+void
+luaL_register_module(struct lua_State *L, const char *mod_name,
+		     const struct luaL_Reg *methods, const char *version);
+
 /**
  * Create an instance of Lua interpreter and load it with
  * Tarantool modules.  Creates a Lua state, imports global

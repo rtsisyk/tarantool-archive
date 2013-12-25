@@ -1884,15 +1884,15 @@ mod_lua_init(struct lua_State *L)
 {
 	/* box, box.tuple */
 	tarantool_lua_register_type(L, tuplelib_name, lbox_tuple_meta);
-	luaL_register(L, tuplelib_name, lbox_tuplelib);
+	luaL_register_module(L, tuplelib_name, lbox_tuplelib, NULL);
 	lua_pop(L, 1);
 	tarantool_lua_register_type(L, tuple_iteratorlib_name,
 				    lbox_tuple_iterator_meta);
-	luaL_register(L, "box", boxlib);
+	luaL_register_module(L, "box", boxlib, NULL);
 	lua_pop(L, 1);
 	/* box.index */
 	tarantool_lua_register_type(L, indexlib_name, lbox_index_meta);
-	luaL_register(L, "box.index", indexlib);
+	luaL_register_module(L, "box.index", indexlib, NULL);
 	box_index_init_iterator_types(L, -2);
 	lua_pop(L, 1);
 	tarantool_lua_register_type(L, iteratorlib_name, lbox_iterator_meta);

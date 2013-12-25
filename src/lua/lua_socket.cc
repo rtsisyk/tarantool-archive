@@ -52,7 +52,7 @@ extern "C" {
 #include <stdlib.h>
 #include <mutex.h>
 
-static const char socketlib_name[] = "box.socket";
+static const char socketlib_name[] = "socket";
 
 /**
  * gethostbyname(), getaddrinfo() and friends do not use
@@ -972,7 +972,7 @@ tarantool_lua_socket_init(struct lua_State *L)
 		{NULL, NULL}
 	};
 	tarantool_lua_register_type(L, socketlib_name, lbox_socket_meta);
-	luaL_register(L, socketlib_name, socketlib);
+	luaL_register_module(L, socketlib_name, socketlib, NULL);
 	lua_pushstring(L, "SHUT_RD");
 	lua_pushnumber(L, SHUT_RD);
 	lua_settable(L, -3);

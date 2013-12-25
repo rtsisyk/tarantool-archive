@@ -39,7 +39,7 @@ extern "C" {
 #include "session.h"
 #include "sio.h"
 
-static const char *sessionlib_name = "box.session";
+static const char *sessionlib_name = "session";
 extern lua_State *root_L;
 
 /**
@@ -209,6 +209,6 @@ static const struct luaL_reg sessionlib[] = {
 void
 tarantool_lua_session_init(struct lua_State *L)
 {
-	luaL_register(L, sessionlib_name, sessionlib);
+	luaL_register_module(L, sessionlib_name, sessionlib, NULL);
 	lua_pop(L, 1);
 }

@@ -260,7 +260,7 @@ static const struct luaL_reg boxlib[] = {
  * sends an asynchronous wakeup event to the fiber.
  */
 
-static const char *fiberlib_name = "box.fiber";
+static const char *fiberlib_name = "fiber";
 
 enum fiber_state { DONE, YIELD, DETACH };
 
@@ -1133,6 +1133,28 @@ tarantool_lua_register_type(struct lua_State *L, const char *type_name,
 	lua_pop(L, 1);
 }
 
+void
+luaL_register_module(struct lua_State *L, const char *mod_name,
+		     const struct luaL_Reg *methods, const char *version)
+{
+	luaL_register(L, mod_name, methods);
+	lua_pushstring(L, mod_name);
+	lua_setfield(L, -2, "_NAME");
+	lua_pushstring(L, version != NULL ? version : PACKAGE_VERSION);
+	lua_setfield(L, -2, "_VERSION");
+	if (strncmp(mod_name, "box", 3) != 0) {
+		/* Add box.modname alias for modname */
+		lua_getfield(L, LUA_GLOBALSINDEX, "box");
+		assert(!lua_isnil(L, -1));
+		lua_pushstring(L, mod_name);
+		lua_pushvalue(L, -3);
+		lua_settable(L, -3);
+		lua_pop(L, 1); /* box */
+		lua_pushnil(L);
+		lua_setglobal(L, mod_name);
+	}
+}
+
 static const struct luaL_reg errorlib [] = {
 	{NULL, NULL}
 };
@@ -1346,7 +1368,7 @@ tarantool_lua_init()
 	lua_setglobal(L, "ffi");
 	luaL_register(L, boxlib_name, boxlib);
 	lua_pop(L, 1);
-	luaL_register(L, fiberlib_name, fiberlib);
+	luaL_register_module(L, fiberlib_name, fiberlib, NULL);
 	lua_pop(L, 1);
 	tarantool_lua_register_type(L, fiberlib_name, lbox_fiber_meta);
 	lua_register(L, "print", lbox_print);
