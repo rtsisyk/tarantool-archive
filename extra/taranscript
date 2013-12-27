@@ -1,0 +1,94 @@
+#!/bin/sh
+#
+# A simple shell script to use tarantool_box as a Lua interpreter
+#
+
+TARANTOOL_BOX=tarantool_box
+
+if test -z "$1"; then
+    echo "Usage $0 filename.lua" 1>&2
+    exit 1
+fi
+
+FILE=$1
+
+TARANTOOL_VERSION=$(${TARANTOOL_BOX} --version | head -n 1 | cut -d ' ' -f 2)
+version_ge() {
+    [ "$(printf $1\\n$2 | sort -n | head -n 1)" = "$2" ]
+}
+
+PREFIX=/usr/local
+#$(dirname $(dirname $(readlink -f $0)))
+
+# Save current directory
+WORK_DIR=$(readlink -f .)
+
+# Create a temporary directory for for Tarantool files
+TARANTOOL_DIR=$(mktemp -d)
+
+cd ${TARANTOOL_DIR}
+CFG=${TARANTOOL_DIR}/tarantool.cfg
+INIT_LUA=${TARANTOOL_DIR}/init.lua
+LOGGER="${TARANTOOL_DIR}/logger.sh"
+LOG="${TARANTOOL_DIR}/tarantool.log"
+
+# Create logger
+cat > "${LOGGER}" << EOF
+tee "${LOG}" | \
+    grep -E -v '\s+\[[[:digit:]]*\]\s[[:digit:]]+/.* [[:upper:]]>\s'
+EOF
+
+# Create configuration
+cat > "${CFG}" <<EOF
+slab_alloc_arena = 0.1
+pid_file = "box.pid"
+logger="/bin/sh ${LOGGER}"
+primary_port = 34013
+secondary_port = 34014
+admin_port = 34015
+wal_mode = none
+EOF
+
+if ! version_ge "${TARANTOOL_VERSION}" "1.6"; then
+    cat >> "${CFG}" <<EOF
+    space[0].enabled = 1
+    space[0].index[0].type = "HASH"
+    space[0].index[0].unique = 1
+    space[0].index[0].key_field[0].fieldno = 0
+    space[0].index[0].key_field[0].type = "NUM"
+EOF
+fi
+
+# Save command-line arguments
+ARGS="arg = { [0] = [[$1]];"
+shift
+for var in "$@"; do
+    ARGS="${ARGS} [[${var}]];"
+done
+ARGS="${ARGS}}"
+
+# Create init.lua
+cat > "${INIT_LUA}" <<EOF
+${ARGS}
+local ffi = require("ffi")
+ffi.cdef([[
+int chdir(const char *path);
+]])
+ffi.C.chdir([[${WORK_DIR}]])
+dofile(arg[0])
+os.exit(0)
+EOF
+
+# Run tarantool_box
+if ! version_ge "${TARANTOOL_VERSION}" "1.6"; then
+    ${TARANTOOL_BOX} -c "${CFG}" --init-storage 1> /dev/null 2> /dev/null
+fi
+${TARANTOOL_BOX} -c "${CFG}"
+ret=$?
+if test ${ret} -ne 0; then
+    # Display the log file on an error
+    ls ${TARANTOOL_DIR} > /dev/null # a workaround on strange tmpfs behaviour
+    cat "${LOG}"
+fi
+rm -rf "${TARANTOOL_DIR}"
+exit ${ret}

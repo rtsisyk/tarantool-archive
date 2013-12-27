@@ -30,7 +30,6 @@ find_program(CONFETTI confetti)
 find_program(LD ld)
 find_program(POD2MAN pod2man)
 
-
 #
 # This instructs the rest of the build system what product
 # and what modules to produce.
@@ -144,34 +143,24 @@ include_directories("${PROJECT_SOURCE_DIR}/third_party")
 # Specify prefixes
 #
 if (NOT DEFINED CMAKE_SYSCONF_DIR)
-    set (CMAKE_SYSCONF_DIR "etc")
+    set (CMAKE_SYSCONF_DIR "${CMAKE_INSTALL_PREFIX}/etc")
 endif()
 if (NOT DEFINED CMAKE_LOCALSTATE_DIR)
-    set (CMAKE_LOCALSTATE_DIR "var")
+    set (CMAKE_LOCALSTATE_DIR "${CMAKE_INSTALL_PREFIX}/var")
 endif()
 if (NOT DEFINED CMAKE_MAN_DIR)
-    set (CMAKE_MAN_DIR "man")
+    set (CMAKE_MAN_DIR "${CMAKE_INSTALL_PREFIX}/man")
 endif()
 
 #
 # Specify system-specific Lua prefixes
 #
-if (NOT DEFINED LUA_SYSPATH)
-    set (LUA_SYSPATH "")
-endif()
-if (NOT DEFINED LUA_SYSCPATH)
-    set (LUA_SYSCPATH "")
-endif()
-
-#
-# Specify Tarantool modules Lua prefixes
-#
-if (NOT DEFINED LUA_LIBPATH)
-    set (LUA_LIBPATH "")
-endif()
-if (NOT DEFINED LUA_LIBCPATH)
-    set (LUA_LIBCPATH "")
-endif()
+if (NOT DEFINED LUA_SRC_SUBDIR)
+    set(LUA_SRC_SUBDIR "share/tarantool/lua")
+endif ()
+if (NOT DEFINED LUA_LIB_SUBDIR)
+    set(LUA_LIB_SUBDIR "lib/tarantool/lua")
+endif ()
 
 #
 # Now handle all configuration options.
@@ -327,6 +316,11 @@ include (cmake/package.cmake)
 #
 include (cmake/rpm.cmake)
 
+option(ENABLE_TARANROCKS "Enable install of TaranRocks" ON)
+if (ENABLE_TARANROCKS)
+    include(cmake/BuildTaranRocks.cmake)
+endif()
+
 add_subdirectory(cfg)
 add_subdirectory(connector)
 add_subdirectory(src)
@@ -337,6 +331,8 @@ add_subdirectory(doc)
 
 install (FILES README.md LICENSE doc/box-protocol.txt
          DESTINATION share/doc/tarantool)
+
+install(PROGRAMS extra/taranscript DESTINATION bin)
 
 #
 # tarantool info summary (used in server version output)
@@ -383,6 +379,7 @@ message (STATUS "ENABLE_AVX: ${ENABLE_AVX}")
 message (STATUS "ENABLE_GCOV: ${ENABLE_GCOV}")
 message (STATUS "ENABLE_GPROF: ${ENABLE_GPROF}")
 message (STATUS "ENABLE_TRACE: ${ENABLE_TRACE}")
+message (STATUS "ENABLE_TARANROCKS: ${ENABLE_TARANROCKS}")
 message (STATUS "ENABLE_BACKTRACE: ${ENABLE_BACKTRACE} (symbol resolve: ${HAVE_BFD})")
 message (STATUS "ENABLE_CLIENT: ${ENABLE_CLIENT}")
 message (STATUS "ENABLE_BUNDLED_LUAJIT: ${ENABLE_BUNDLED_LUAJIT}")

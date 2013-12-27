@@ -3,4 +3,7 @@
 	url = https://github.com/mpx/lua-cjson.git
 [submodule "third_party/luajit"]
 	path = third_party/luajit
-    url = https://github.com/tarantool/luajit.git
+	url = https://github.com/tarantool/luajit.git
+[submodule "third_party/taranrocks/luarocks"]
+	path = third_party/taranrocks/luarocks
+	url = https://github.com/keplerproject/luarocks.git

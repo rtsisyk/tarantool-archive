@@ -162,6 +162,7 @@ macro(luajit_build)
     separate_arguments(luajit_host_cc)
     separate_arguments(luajit_target_cc)
     set (luajit_buildoptions ${luajit_buildoptions}
+        PREFIX="${CMAKE_INSTALL_PREFIX}"
         CFLAGS=""
         CXXFLAGS=""
         HOST_CC="${luajit_host_cc}"
@@ -192,6 +193,10 @@ macro(luajit_build)
     )
     add_dependencies(build_bundled_libs libluajit)
     unset (luajit_buildoptions)
+    set(inc ${PROJECT_SOURCE_DIR}/third_party/luajit/src)
+    install (FILES ${inc}/lua.h ${inc}/lualib.h ${inc}/lauxlib.h
+        ${inc}/luaconf.h ${inc}/lua.hpp ${inc}/luajit.h
+        DESTINATION include/tarantool/lua)
 endmacro()
 
 #

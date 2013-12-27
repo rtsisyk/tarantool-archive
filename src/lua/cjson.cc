@@ -46,6 +46,10 @@ tarantool_lua_cjson_init(struct lua_State *L)
 	lua_settable(L, -3);
 	lua_pop(L, 1);
 
+	/*
+	 * luaopen_cjson doesn't use luaL_register.
+	 * Add module to package.loaded manually.
+	 */
 	lua_getfield(L, LUA_REGISTRYINDEX, "_LOADED");
 	lua_pushstring(L, "cjson");
 	lua_pushvalue(L, -3);

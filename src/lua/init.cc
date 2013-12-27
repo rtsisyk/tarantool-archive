@@ -1137,7 +1137,9 @@ void
 luaL_register_module(struct lua_State *L, const char *mod_name,
 		     const struct luaL_Reg *methods, const char *version)
 {
+	/* Register Lua/C API functions and add module to package.loaded */
 	luaL_register(L, mod_name, methods);
+	/* Set _NAME and _VERSION values */
 	lua_pushstring(L, mod_name);
 	lua_setfield(L, -2, "_NAME");
 	lua_pushstring(L, version != NULL ? version : PACKAGE_VERSION);
@@ -1169,42 +1171,6 @@ tarantool_lua_error_init(struct lua_State *L) {
 		lua_pushnumber(L, tnt_errcode_val(i));
 		lua_setfield(L, -2, name);
 	}
-	lua_pop(L, 1);
-}
-
-static void
-tarantool_lua_setpath(struct lua_State *L, const char *type, ...)
-__attribute__((sentinel));
-
-/**
- * Prepend the variable list of arguments to the Lua
- * package search path (or cpath, as defined in 'type').
- */
-static void
-tarantool_lua_setpath(struct lua_State *L, const char *type, ...)
-{
-	char path[PATH_MAX];
-	va_list args;
-	va_start(args, type);
-	int off = 0;
-	const char *p;
-	while ((p = va_arg(args, const char*))) {
-		/*
-		 * If LUA_SYSPATH or LUA_SYSCPATH is an empty
-		 * string, skip it.
-		 */
-		if (*p == '\0')
-			continue;
-		off += snprintf(path + off, sizeof(path) - off, "%s;", p);
-	}
-	va_end(args);
-	lua_getglobal(L, "package");
-	lua_getfield(L, -1, type);
-	snprintf(path + off, sizeof(path) - off, "%s",
-	         lua_tostring(L, -1));
-	lua_pop(L, 1);
-	lua_pushstring(L, path);
-	lua_setfield(L, -2, type);
 	lua_pop(L, 1);
 }
 
@@ -1328,6 +1294,43 @@ tarantool_plugins_init(struct lua_State *L)
 	lua_settop(L, top);
 }
 
+static void
+tarantool_lua_setpaths(struct lua_State *L)
+{
+	const char *home = getenv("HOME");
+	lua_getglobal(L, "package");
+	int top = lua_gettop(L);
+	lua_pushstring(L, cfg.script_dir);
+	lua_pushliteral(L, "/?.lua;");
+	lua_pushstring(L, cfg.script_dir);
+	lua_pushliteral(L, "/?/init.lua;");
+	if (home != NULL) {
+		lua_pushstring(L, home);
+		lua_pushliteral(L, "/.local/" LUA_SRC_SUBDIR "/?.lua;");
+		lua_pushstring(L, home);
+		lua_pushliteral(L, "/.local/" LUA_SRC_SUBDIR "/?/init.lua;");
+	}
+	lua_pushliteral(L, INSTALL_PREFIX "/" LUA_SRC_SUBDIR "/?.lua;");
+	lua_pushliteral(L, INSTALL_PREFIX "/" LUA_SRC_SUBDIR "/?/init.lua;");
+	lua_getfield(L, top, "path");
+	lua_concat(L, lua_gettop(L) - top);
+	lua_setfield(L, top, "path");
+
+	lua_pushstring(L, cfg.script_dir);
+	lua_pushliteral(L, "/?.so;");
+	if (home != NULL) {
+		lua_pushstring(L, home);
+		lua_pushliteral(L, "/.local/" LUA_LIB_SUBDIR "/?.so;");
+	}
+	lua_pushliteral(L, INSTALL_PREFIX "/" LUA_LIB_SUBDIR "/?.so;");
+	lua_getfield(L, top, "cpath");
+	lua_concat(L, lua_gettop(L) - top);
+	lua_setfield(L, top, "cpath");
+
+	assert(lua_gettop(L) == top);
+	lua_pop(L, 1); /* package */
+}
+
 struct lua_State *
 tarantool_lua_init()
 {
@@ -1335,23 +1338,8 @@ tarantool_lua_init()
 	if (L == NULL)
 		return L;
 	luaL_openlibs(L);
-	/*
-	 * Search for Lua modules, apart from the standard
-	 * locations, in the server script_dir and in the
-	 * system-wide Tarantool paths. This way 3 types
-	 * of packages become available for use: standard Lua
-	 * packages, Tarantool-specific Lua libs and
-	 * instance-specific Lua scripts.
-	 */
 
-	char path[PATH_MAX];
-
-	snprintf(path, sizeof(path), "%s/?.lua", cfg.script_dir);
-	tarantool_lua_setpath(L, "path", path, LUA_LIBPATH,
-	                      LUA_SYSPATH, NULL);
-	snprintf(path, sizeof(path), "%s/?.so", cfg.script_dir);
-	tarantool_lua_setpath(L, "cpath", path, LUA_LIBCPATH,
-	                      LUA_SYSCPATH, NULL);
+	tarantool_lua_setpaths(L);
 
 	/* Loadi 'ffi' extension and make it inaccessible */
 	lua_getglobal(L, "require");
