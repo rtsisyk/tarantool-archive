@@ -26,59 +26,16 @@
  * THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
  */
-#include "error.h"
-#include <stdio.h>
 
-static struct method clienterror_methods[] = {
-	make_method(&type_ClientError, "code", &ClientError::errcode),
-	METHODS_END
-};
-const struct type type_ClientError = make_type("ClientError", &type_Exception,
-	clienterror_methods);
-
-ClientError::ClientError(const char *file, unsigned line,
-			 uint32_t errcode, ...)
-	:Exception(&type_ClientError, file, line)
+#include "reflection.h"
+method
+make_empty_method()
 {
-	m_errcode = errcode;
-	va_list ap;
-	va_start(ap, errcode);
-	vsnprintf(m_errmsg, sizeof(m_errmsg),
-		  tnt_errcode_desc(m_errcode), ap);
-	va_end(ap);
+	/* TODO: sorry, unimplemented: non-trivial designated initializers */
+	struct method m;
+	m.type = NULL;
+	m.name = NULL;
+	return m;
 }
 
-ClientError::ClientError(const char *file, unsigned line, const char *msg,
-			 uint32_t errcode)
-	: Exception(&type_ClientError, file, line)
-{
-	m_errcode = errcode;
-	strncpy(m_errmsg, msg, sizeof(m_errmsg) - 1);
-	m_errmsg[sizeof(m_errmsg) - 1] = 0;
-}
-
-void
-ClientError::log() const
-{
-	_say(S_ERROR, m_file, m_line, m_errmsg, "%s", tnt_errcode_str(m_errcode));
-}
-
-
-uint32_t
-ClientError::get_errcode(const Exception *e)
-{
-	ClientError *client_error = type_cast(ClientError, e);
-	if (client_error) {
-		return client_error->errcode();
-	}
-	if (type_cast(OutOfMemory, e))
-		return ER_MEMORY_ISSUE;
-	return ER_PROC_LUA;
-}
-
-ErrorInjection::ErrorInjection(const char *file, unsigned line, const char *msg)
-	: LoggedError(file, line, ER_INJECTION, msg)
-{
-	/* nothing */
-}
-
+const struct method METHODS_END = make_empty_method(); /* zerod by linker */

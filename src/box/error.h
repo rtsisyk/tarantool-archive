@@ -31,6 +31,7 @@
 #include "errcode.h"
 #include "exception.h"
 
+extern const struct type type_ClientError;
 class ClientError: public Exception {
 public:
 	virtual void raise()
@@ -46,9 +47,9 @@ public:
 		return m_errcode;
 	}
 
-	ClientError(const char *file, unsigned line, uint32_t errcode, ...);
+	explicit ClientError(const char *file, unsigned line, uint32_t errcode, ...);
 	/* A special constructor for lbox_raise */
-	ClientError(const char *file, unsigned line, const char *msg,
+	explicit ClientError(const char *file, unsigned line, const char *msg,
 		    uint32_t errcode);
 
 	static uint32_t get_errcode(const Exception *e);
