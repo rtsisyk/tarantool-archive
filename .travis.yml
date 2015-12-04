@@ -1,41 +1,24 @@
-language: cpp
+sudo: required
+services:
+  - docker
 
-os:
-  - linux
-  - osx
-
-compiler:
-  - clang
-  - gcc
-
-matrix:
-  exclude:
-    - os: osx
-      compiler: gcc
-
-addons:
-  postgresql: "9.1"
-
-before_install:
-  - git submodule update --init --recursive
-
-before_script:
-  - export PG='127.0.0.1:5432:tarantool:tarantool:tarantool'
-  - export MYSQL='127.0.0.1:3306:tarantool:tarantool:tarantool'
-
-install:
-  - sh ./extra/travis/build_$TRAVIS_OS_NAME.sh
+env:
+    matrix:
+      - OS=el DIST=6 PACK=rpm
+      - OS=el DIST=7 PACK=rpm
+      - OS=fedora DIST=22 PACK=rpm
+      - OS=fedora DIST=23 PACK=rpm
+      - OS=ubuntu DIST=trusty PACK=deb
+      - OS=ubuntu DIST=precise PACK=deb
+      - OS=ubuntu DIST=vivid PACK=deb
+      - OS=debian DIST=jessie PACK=deb
+      - OS=debian DIST=wheezy PACK=deb
+      - OS=debian DIST=stretch PACK=deb
+      - PACK=none
 
 script:
-  - sh ./extra/travis/test_$TRAVIS_OS_NAME.sh
+  - git clone https://github.com/tarantool/build.git
+  - ./build/pack/travis.sh
 
 notifications:
-  irc:
-    channels:
-      - irc.freenode.net#tarantool
-    on_success: change
-    on_failure: always
-  email: false
-
-git:
-  depth: 500
+  email: true
