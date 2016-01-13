@@ -239,8 +239,19 @@ txn_commit(struct txn *txn)
 		int64_t signature = -1;
 		txn->engine->prepare(txn);
 
-		if (txn->n_rows > 0)
-			signature = txn_write_to_wal(txn);
+		if (engine_join_stage) {
+			struct txn_stmt *stmt =
+				stailq_first_entry(&txn->stmts,
+						   struct txn_stmt, next);
+			assert(stmt);
+			assert(stmt->row != NULL);
+			assert(stmt->row->server_id == 0);
+			signature = stmt->row->lsn;
+		} else {
+			if (txn->n_rows > 0)
+				signature = txn_write_to_wal(txn);
+		}
+
 		/*
 		 * The transaction is in the binary log. No action below
 		 * may throw. In case an error has happened, there is

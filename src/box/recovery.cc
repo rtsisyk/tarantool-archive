@@ -245,9 +245,13 @@ recovery_apply_row(struct recovery *r, struct xrow_header *row)
  * Read all rows in a file starting from the last position.
  * Advance the position. If end of file is reached,
  * set l.eof_read.
+ * The reading will be stopped on reaching
+ * recovery vclock signature > to_checkpoint
+ * (after playing to_checkpoint record)
+ * use LSN_INFINITE for boundless recover
  */
 void
-recover_xlog(struct recovery *r, struct xlog *l)
+recover_xlog(struct recovery *r, struct xlog *l, int64_t to_checkpoint)
 {
 	struct xlog_cursor i;
 
@@ -264,7 +268,9 @@ recover_xlog(struct recovery *r, struct xlog *l)
 	 * the file is fully read: it's fully read only
 	 * when EOF marker has been read, see i.eof_read
 	 */
-	while (xlog_cursor_next_xc(&i, &row) == 0) {
+	while (xlog_cursor_next(&i, &row) == 0) {
+		if (r->vclock.signature >= to_checkpoint)
+			return;
 		try {
 			recovery_apply_row(r, &row);
 		} catch (ClientError *e) {
@@ -294,23 +300,27 @@ recovery_bootstrap(struct recovery *r)
 	const char *filename = "bootstrap.snap";
 	FILE *f = fmemopen((void *) &bootstrap_bin,
 			   sizeof(bootstrap_bin), "r");
-	struct xlog *snap = xlog_open_stream_xc(&r->snap_dir, 0, f, filename);
+	struct xlog *snap = xlog_open_stream(&r->snap_dir, 0, f, filename);
 	auto guard = make_scoped_guard([=]{
 		xlog_close(snap);
 	});
 	/** The snapshot must have a EOF marker. */
-	recover_xlog(r, snap);
+	recover_xlog(r, snap, LSN_INFINITE);
 }
 
 /**
  * Find out if there are new .xlog files since the current
  * LSN, and read them all up.
  *
+ * Reading will be stopped on reaching recovery
+ * vclock signature > to_checkpoint (after playing to_checkpoint record)
+ * use LSN_INFINITE for boundless recover
+ *
  * This function will not close r->current_wal if
  * recovery was successful.
  */
-static void
-recover_remaining_wals(struct recovery *r)
+void
+recover_remaining_wals(struct recovery *r, int64_t to_checkpoint)
 {
 	/*
 	 * Sic: it could be tempting to put xdir_scan() inside
@@ -350,6 +360,8 @@ recover_remaining_wals(struct recovery *r)
 	for (clock = vclockset_match(&r->wal_dir.index, &r->vclock);
 	     clock != NULL;
 	     clock = vclockset_next(&r->wal_dir.index, clock)) {
+		if (clock->signature >= to_checkpoint)
+			break;
 
 		if (vclock_compare(clock, &r->vclock) > 0) {
 			/**
@@ -374,7 +386,7 @@ recover_remaining_wals(struct recovery *r)
 
 recover_current_wal:
 		if (r->current_wal->eof_read == false)
-			recover_xlog(r, r->current_wal);
+			recover_xlog(r, r->current_wal, to_checkpoint);
 		/**
 		 * Keep the last log open to remember recovery
 		 * position. This speeds up recovery in local hot
@@ -392,7 +404,7 @@ recovery_finalize(struct recovery *r, enum wal_mode wal_mode,
 	recovery_stop_local(r);
 
 	xdir_scan_xc(&r->wal_dir);
-	recover_remaining_wals(r);
+	recover_remaining_wals(r, LSN_INFINITE);
 
 	recovery_close_log(r);
 
@@ -551,7 +563,7 @@ recovery_follow_f(va_list ap)
 			if (r->current_wal == NULL || r->current_wal->eof_read)
 				xdir_scan_xc(&r->wal_dir);
 
-			recover_remaining_wals(r);
+			recover_remaining_wals(r, LSN_INFINITE);
 
 			end = r->current_wal ? vclock_sum(&r->current_wal->vclock) : 0;
 			/*
@@ -589,7 +601,7 @@ recovery_follow_local(struct recovery *r, const char *name,
 	 * Blocks until finished.
 	 */
 	xdir_scan_xc(&r->wal_dir);
-	recover_remaining_wals(r);
+	recover_remaining_wals(r, LSN_INFINITE);
 	recovery_close_log(r);
 
 	/*

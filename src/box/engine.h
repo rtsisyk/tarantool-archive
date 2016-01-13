@@ -31,6 +31,7 @@
  * SUCH DAMAGE.
  */
 #include "index.h"
+#include <stdint.h>
 
 struct request;
 struct space;
@@ -43,6 +44,7 @@ enum engine_flags {
 };
 
 extern struct rlist engines;
+extern bool engine_join_stage;
 
 typedef void
 (*engine_replace_f)(struct txn *txn, struct space *,
@@ -97,7 +99,7 @@ public:
 	 */
 	virtual bool needToBuildSecondaryKey(struct space *space);
 
-	virtual void join(struct relay *);
+	virtual int64_t join(struct relay *);
 	/**
 	 * Begin a new single or multi-statement transaction.
 	 * Called on first statement in a transaction, not when
@@ -244,6 +246,12 @@ void
 engine_begin_join();
 
 /**
+ * Called at the end of JOIN routine.
+ */
+void
+engine_end_join();
+
+/**
  * Called at the end of recovery.
  * Build secondary keys in all spaces.
  */
@@ -258,8 +266,10 @@ engine_checkpoint(int64_t checkpoint_id);
 
 /**
  * Send a snapshot.
+ * Returns lsn of record that must be restored from xlog up to
+ *  or -1 if engine does not need it
  */
-void
+int64_t
 engine_join(struct relay *);
 
 #endif /* TARANTOOL_BOX_ENGINE_H_INCLUDED */

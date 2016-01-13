@@ -1068,6 +1068,9 @@ bootstrap_from_master(struct server *master)
 
 	/* Replace server vclock using master's vclock */
 	vclock_copy(&recovery->vclock, &master->applier->vclock);
+
+	/* Finalize the new replica */
+	engine_end_join();
 }
 
 static void
