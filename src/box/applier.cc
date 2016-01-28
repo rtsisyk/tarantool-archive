@@ -44,6 +44,7 @@
 #include "version.h"
 #include "trigger.h"
 #include "xrow_io.h"
+#include "engine.h"
 
 /* TODO: add configuration options */
 static const int RECONNECT_DELAY = 1;
@@ -172,6 +173,10 @@ applier_join(struct applier *applier, struct recovery *r)
 		coio_read_xrow(coio, &iobuf->in, &row);
 		applier->last_row_time = ev_now(loop());
 		if (row.type == IPROTO_OK) {
+			if (!engine_wal_recovery) {
+				engine_begin_wal_recovery();
+				continue;
+			}
 			/* End of stream */
 			say_info("done");
 			break;

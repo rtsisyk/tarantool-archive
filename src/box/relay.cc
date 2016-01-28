@@ -99,9 +99,17 @@ relay_join_f(va_list ap)
 	vclock_copy(&relay->r->vclock,
 		    vclockset_last(&relay->r->snap_dir.index));
 
+	struct xrow_header row;
+	xrow_encode_vclock(&row, &relay->r->vclock);
+	row.server_id = 0;
+	row.sync = 0;
+	relay_send(relay, &row);
+
 	/* Catch up to checkpoint if needed */
-	if (checkpoint > 0)
+	if (checkpoint > 0) {
+		xdir_scan_xc(&relay->r->wal_dir);
 		recover_remaining_wals(relay->r, checkpoint);
+	}
 
 	say_info("snapshot sent");
 	return 0;

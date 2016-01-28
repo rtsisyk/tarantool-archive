@@ -45,6 +45,7 @@ enum engine_flags {
 
 extern struct rlist engines;
 extern bool engine_join_stage;
+extern bool engine_wal_recovery;
 
 typedef void
 (*engine_replace_f)(struct txn *txn, struct space *,
@@ -145,6 +146,12 @@ public:
 	 */
 	virtual void beginJoin();
 	/**
+	 * Notify engine about a start of recovering from WALs
+	 * that could be local WALs during local recovery
+	 * of WAL catch up durin join on slave side
+	 */
+	virtual void beginWalRecovery() {}
+	/**
 	 * Begin a two-phase snapshot creation in this
 	 * engine (snapshot is a memtx idea of a checkpoint).
 	 */
@@ -244,6 +251,13 @@ engine_recover_to_checkpoint(int64_t checkpoint_id);
  */
 void
 engine_begin_join();
+
+/**
+ * Called in the middle of JOIN stage,
+ * when xlog catch-up process is started
+ */
+void
+engine_begin_wal_recovery();
 
 /**
  * Called at the end of JOIN routine.

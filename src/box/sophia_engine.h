@@ -49,6 +49,7 @@ struct SophiaEngine: public Engine {
 	virtual void rollbackStatement(struct txn_stmt *stmt);
 	virtual void rollback(struct txn *txn);
 	virtual void beginJoin();
+	virtual void beginWalRecovery() override;
 	virtual void recoverToCheckpoint(int64_t);
 	virtual void endRecovery();
 	virtual int64_t join(struct relay *relay);

@@ -353,6 +353,7 @@ SophiaEngine::init()
 	sp_setint(env, "compaction.0.branch_age_period", cfg_geti("sophia.branch_age_period"));
 	sp_setint(env, "compaction.0.snapshot_period", cfg_geti("sophia.snapshot_period"));
 	sp_setint(env, "log.enable", 0);
+	sp_setint(env, "sophia.recover", 3);
 	int rc = sp_open(env);
 	if (rc == -1)
 		sophia_error(env);
@@ -650,6 +651,14 @@ SophiaEngine::rollback(struct txn *txn)
 void
 SophiaEngine::beginJoin()
 {
+}
+
+void
+SophiaEngine::beginWalRecovery()
+{
+	int rc = sp_open(env);
+	if (rc == -1)
+		sophia_error(env);
 }
 
 void

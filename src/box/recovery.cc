@@ -35,6 +35,7 @@
 #include "bootstrap.h"
 #include "xlog.h"
 #include "xrow.h"
+#include "engine.h"
 
 #include "cluster.h"
 #include "session.h"
@@ -403,6 +404,7 @@ recovery_finalize(struct recovery *r, enum wal_mode wal_mode,
 {
 	recovery_stop_local(r);
 
+	engine_begin_wal_recovery();
 	xdir_scan_xc(&r->wal_dir);
 	recover_remaining_wals(r, LSN_INFINITE);
 

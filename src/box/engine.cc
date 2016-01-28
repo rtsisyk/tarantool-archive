@@ -267,10 +267,12 @@ engine_recover_to_checkpoint(int64_t checkpoint_id)
 }
 
 bool engine_join_stage = false;
+bool engine_wal_recovery = false;
 
 void
 engine_begin_join()
 {
+	assert(!engine_join_stage);
 	engine_join_stage = true;
 	/* recover engine snapshot */
 	Engine *engine;
@@ -280,9 +282,22 @@ engine_begin_join()
 }
 
 void
+engine_begin_wal_recovery()
+{
+	assert(!engine_wal_recovery);
+	engine_wal_recovery = true;
+	Engine *engine;
+	engine_foreach(engine)
+		engine->beginWalRecovery();
+}
+
+void
 engine_end_join()
 {
+	assert(engine_join_stage);
+	assert(engine_wal_recovery);
 	engine_join_stage = false;
+	engine_wal_recovery = false;
 }
 
 void
