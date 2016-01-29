@@ -212,32 +212,48 @@ message(STATUS "Module sources:   ${MODULE_FULL_LUADIR}")
 message(STATUS "Module libraries: ${MODULE_FULL_LIBDIR}")
 message(STATUS "Module includes:  ${MODULE_FULL_INCLUDEDIR}")
 
-list(APPEND MODULE_LUAPATH "${MODULE_FULL_LUADIR}/?.lua")
-list(APPEND MODULE_LUAPATH "${MODULE_FULL_LUADIR}/?/init.lua")
-foreach(dir
-	"lua/luarocks/share/lua/5.1"
-	"lua/5.1")
-    list(APPEND MODULE_LUAPATH "/usr/${CMAKE_INSTALL_LIBDIR}/${dir}/?.lua")
-    list(APPEND MODULE_LUAPATH "/usr/${CMAKE_INSTALL_LIBDIR}/${dir}/?/init.lua")
-endforeach()
+set(prefixes "/usr/local")
+if (NOT "${CMAKE_INSTALL_PREFIX}" STREQUAL "/usr/local")
+    list(APPEND prefixes ${CMAKE_INSTALL_PREFIX})
+endif ()
+if (NOT "${CMAKE_INSTALL_PREFIX}" STREQUAL "/usr")
+    list(APPEND prefixes "/usr")
+endif ()
 
-list(APPEND MODULE_LIBPATH "${MODULE_FULL_LIBDIR}/?${CMAKE_SHARED_MODULE_SUFFIX}")
-if (NOT ${CMAKE_INSTALL_PREFIX} STREQUAL "/usr" AND
-      NOT ${CMAKE_INSTALL_PREFIX} STREQUAL "/usr/local")
-    list(APPEND MODULE_LIBPATH "${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_LIBDIR}")
-endif()
-
+message(STATUS "Module PREFIXES ${prefixes}")
 foreach(dir
-	"/usr/local"
-	"/usr")
-    foreach(lua_lib
-            "lua/luarocks/lib/lua/5.1"
-            "lua/5.1")
-        list(APPEND MODULE_LIBPATH
-        "${dir}/${CMAKE_INSTALL_LIBDIR}/${lua_lib}/?${CMAKE_SHARED_MODULE_SUFFIX}")
+        ${MODULE_SUFFIX}
+        # "lua/luarocks/share/lua/5.1"
+        "lua/5.1")
+    foreach(prefix IN LISTS prefixes)
+        list(APPEND MODULE_LUAPATH "${prefix}/share/${dir}/?.lua")
+        list(APPEND MODULE_LUAPATH "${prefix}/share/${dir}/?/init.lua")
     endforeach()
 endforeach()
+foreach(dir
+        ${MODULE_SUFFIX}
+        # "lua/luarocks/lib/lua/5.1"
+        "lua/5.1")
+    if (NOT "${MODULE_FULL_LIBDIR}" )
+    if ("${CMAKE_INSTALL_FULL_LIBDIR}" STREQUAL "/usr" AND
+        NOT "${CMAKE_INSTALL_FULL_LIBDIR}" STREQUAL "/usr/lib")
+        list(APPEND MODULE_LIBPATH
+            "${CMAKE_INSTALL_FULL_LIBDIR}/${dir}/?${CMAKE_SHARED_MODULE_SUFFIX}")
+    endif ()
 
+    foreach(prefix IN LISTS prefixes)
+        list(APPEND MODULE_LIBPATH
+            "${prefix}/lib/${dir}/?${CMAKE_SHARED_MODULE_SUFFIX}")
+    endforeach()
+    # Multilib support, see comments in GNUInstallDirs.cmake
+    if ("${CMAKE_INSTALL_PREFIX}" STREQUAL "/usr" AND
+        NOT "${CMAKE_INSTALL_FULL_LIBDIR}" STREQUAL "/usr/lib")
+        list(APPEND MODULE_LIBPATH
+            "${CMAKE_INSTALL_FULL_LIBDIR}/${dir}/?${CMAKE_SHARED_MODULE_SUFFIX}")
+    endif ()
+endforeach()
+
+message(STATUS "Module libdirdefault ${CMAKE_INSTALL_LIBDIR}")
 message(STATUS "Module package.path: ${MODULE_LUAPATH}")
 message(STATUS "Module package.cpath: ${MODULE_LIBPATH}")
 
