@@ -10,7 +10,8 @@ if [ -n "${COVERALLS_TOKEN}" ] && [ ${CC}=gcc ]; then
     sudo apt-get -q -y install lcov
     sudo gem install bundler
     sudo gem install coveralls-lcov
-    coveralls-lcov --version
+    sudo coveralls-lcov --version
+    [ $? -eq 0 ] || exit $?
     CMAKE_OPTS="-DENABLE_GCOV=ON"
 else
     COVERALLS_TOKEN=""
