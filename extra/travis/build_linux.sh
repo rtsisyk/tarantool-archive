@@ -10,8 +10,6 @@ if [ -n "${COVERALLS_TOKEN}" ] && [ ${CC}=gcc ]; then
     sudo apt-get -q -y install lcov
     sudo gem install bundler
     sudo gem install coveralls-lcov
-    sudo coveralls-lcov --version
-    [ $? -eq 0 ] || exit $?
     CMAKE_OPTS="-DENABLE_GCOV=ON"
 else
     COVERALLS_TOKEN=""
@@ -36,5 +34,6 @@ if [ -n "${COVERALLS_TOKEN}" ]; then
     rm -f ${LCOV_FILE}.tmp
     echo "Exporting code coverage information to coveralls.io"
     # Upload to coveralls.io
-    COVERALLS_REPO_TOKEN=${COVERALLS_TOKEN} coveralls-lcov ${LCOV_FILE}
+    export COVERALLS_REPO_TOKEN=${COVERALLS_TOKEN}
+    sudo coveralls-lcov ${LCOV_FILE}
 fi
