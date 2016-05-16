@@ -8,7 +8,9 @@ CMAKE_OPTS=""
 if [ -n "${COVERALLS_TOKEN}" ] && [ ${CC}=gcc ]; then
     echo "Code coverage analysis is enabled"
     sudo apt-get -q -y install lcov
+    sudo gem install bundler
     sudo gem install coveralls-lcov
+    coveralls-lcov --version
     CMAKE_OPTS="-DENABLE_GCOV=ON"
 else
     COVERALLS_TOKEN=""
