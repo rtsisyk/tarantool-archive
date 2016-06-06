@@ -54,34 +54,25 @@ void
 PhiaSpace::applySnapshotRow(struct space *space, struct request *request)
 {
 	assert(request->type == IPROTO_INSERT);
+	assert(request->header != NULL);
 	PhiaIndex *index = (PhiaIndex *)index_find(space, 0);
 
 	space_validate_tuple_raw(space, request->tuple);
-	int size = request->tuple_end - request->tuple;
-	const char *key = tuple_field_raw(request->tuple, size,
-					  index->key_def->parts[0].fieldno);
-	primary_key_validate(index->key_def, key, index->key_def->part_count);
-
-	const char *value = NULL;
-	struct phia_document *obj = index->createDocument(key, &value);
-	size_t valuesize = size - (value - request->tuple);
-	if (valuesize > 0)
-		phia_document_set_field(obj, "value", value, valuesize);
-
-	assert(request->header != NULL);
+	struct phia_tuple *tuple = index->createTuple(request->tuple,
+						      request->tuple_end);
+	auto tuple_guard = make_scoped_guard([=]{
+		phia_tuple_unref(tuple);
+	});
 
 	struct phia_tx *tx = phia_begin(index->env);
-	if (tx == NULL) {
-		phia_document_delete(obj);
+	if (tx == NULL)
 		phia_raise();
-	}
 
 	int64_t signature = request->header->lsn;
 	phia_tx_set_lsn(tx, signature);
 
-	if (phia_replace(tx, obj) != 0)
+	if (phia_replace(tx, tuple) != 0)
 		phia_raise();
-	/* obj destroyed by phia_replace() */
 
 	int rc = phia_commit(tx);
 	switch (rc) {
@@ -110,12 +101,11 @@ PhiaSpace::executeReplace(struct txn*,
 	PhiaIndex *index = (PhiaIndex *)index_find(space, 0);
 
 	space_validate_tuple_raw(space, request->tuple);
-
-	int size = request->tuple_end - request->tuple;
-	const char *key =
-		tuple_field_raw(request->tuple, size,
-		                index->key_def->parts[0].fieldno);
-	primary_key_validate(index->key_def, key, index->key_def->part_count);
+	struct phia_tuple *tuple = index->createTuple(request->tuple,
+						      request->tuple_end);
+	auto tuple_guard = make_scoped_guard([=]{
+		phia_tuple_unref(tuple);
+	});
 
 	/* unique constraint */
 	if (request->type == IPROTO_INSERT) {
@@ -125,24 +115,18 @@ PhiaSpace::executeReplace(struct txn*,
 		if (engine->recovery_complete)
 			mode = DUP_INSERT;
 		if (mode == DUP_INSERT) {
-			struct tuple *found = index->findByKey(key, 0);
+			struct tuple *found = index->findByKey(tuple);
 			if (found) {
 				tuple_delete(found);
 				tnt_raise(ClientError, ER_TUPLE_FOUND,
-						  index_name(index), space_name(space));
+					  index_name(index), space_name(space));
 			}
 		}
 	}
 
 	/* replace */
 	struct phia_tx *tx = (struct phia_tx *)(in_txn()->engine_tx);
-	const char *value = NULL;
-	struct phia_document *obj = index->createDocument(key, &value);
-	size_t valuesize = size - (value - request->tuple);
-	if (valuesize > 0)
-		phia_document_set_field(obj, "value", value, valuesize);
-	int rc;
-	rc = phia_replace(tx, obj);
+	int rc = phia_replace(tx, tuple);
 	if (rc == -1)
 		phia_raise();
 
@@ -153,17 +137,23 @@ struct tuple *
 PhiaSpace::executeDelete(struct txn*, struct space *space,
                            struct request *request)
 {
-	PhiaIndex *index = (PhiaIndex *)index_find(space, request->index_id);
+	PhiaIndex *pk = (PhiaIndex *)
+		index_find_unique(space, request->index_id);
 	const char *key = request->key;
 	uint32_t part_count = mp_decode_array(&key);
-	primary_key_validate(index->key_def, key, part_count);
+	primary_key_validate(pk->key_def, key, part_count);
+
+	struct phia_tuple *tuple = pk->createKey(key, part_count, PHIA_EQ);
+	auto tuple_guard = make_scoped_guard([=]{
+		phia_tuple_unref(tuple);
+	});
 
 	/* remove */
-	struct phia_document *obj = index->createDocument(key, NULL);
 	struct phia_tx *tx = (struct phia_tx *)(in_txn()->engine_tx);
-	int rc = phia_delete(tx, obj);
+	int rc = phia_delete(tx, tuple);
 	if (rc == -1)
 		phia_raise();
+	/* tuple destroyed by phia_delete() */
 	return NULL;
 }
 
@@ -197,17 +187,15 @@ PhiaSpace::executeUpdate(struct txn*, struct space *space,
 	space_validate_tuple(space, new_tuple);
 	space_check_update(space, old_tuple, new_tuple);
 
+	struct phia_tuple *tuple = index->createTuple(new_tuple->data,
+		new_tuple->data + new_tuple->bsize);
+	auto tuple_guard = make_scoped_guard([=]{
+		phia_tuple_unref(tuple);
+	});
+
 	/* replace */
-	key = tuple_field_raw(new_tuple->data, new_tuple->bsize,
-	                      index->key_def->parts[0].fieldno);
 	struct phia_tx *tx = (struct phia_tx *)(in_txn()->engine_tx);
-	const char *value = NULL;
-	struct phia_document *obj = index->createDocument(key, &value);
-	size_t valuesize = new_tuple->bsize - (value - new_tuple->data);
-	if (valuesize > 0)
-		phia_document_set_field(obj, "value", value, valuesize);
-	int rc;
-	rc = phia_replace(tx, obj);
+	int rc = phia_replace(tx, tuple);
 	if (rc == -1)
 		phia_raise();
 	return NULL;
@@ -401,43 +389,14 @@ PhiaSpace::executeUpsert(struct txn*, struct space *space,
 	/* Check field count in tuple */
 	space_validate_tuple_raw(space, request->tuple);
 
-	/* Check tuple fields */
-	tuple_validate_raw(space->format, request->tuple);
-
-	const char *expr      = request->ops;
-	const char *expr_end  = request->ops_end;
-	const char *tuple     = request->tuple;
-	const char *tuple_end = request->tuple_end;
-	uint8_t index_base    = request->index_base;
-
-	/* upsert */
-	mp_decode_array(&tuple);
-	uint32_t expr_size  = expr_end - expr;
-	uint32_t tuple_size = tuple_end - tuple;
-	uint32_t tuple_value_size;
-	const char *tuple_value;
-	struct phia_document *obj = index->createDocument(tuple, &tuple_value);
-	tuple_value_size = tuple_size - (tuple_value - tuple);
-	uint32_t value_size =
-		sizeof(uint8_t) + sizeof(uint32_t) + tuple_value_size + expr_size;
-	char *value = (char *)malloc(value_size);
-	if (value == NULL) {
-		phia_document_delete(obj);
-		tnt_raise(OutOfMemory, sizeof(value_size), "Phia Space",
-		          "executeUpsert");
-	}
-	char *p = value;
-	memcpy(p, &index_base, sizeof(uint8_t));
-	p += sizeof(uint8_t);
-	memcpy(p, &tuple_value_size, sizeof(uint32_t));
-	p += sizeof(uint32_t);
-	memcpy(p, tuple_value, tuple_value_size);
-	p += tuple_value_size;
-	memcpy(p, expr, expr_size);
-	phia_document_set_field(obj, "value", value, value_size);
+	struct phia_tuple *tuple = index->createUpsert(request->tuple,
+		request->tuple_end, request->ops, request->ops_end,
+		request->index_base);
+	auto tuple_guard = make_scoped_guard([=]{
+		phia_tuple_unref(tuple);
+	});
 	struct phia_tx *tx = (struct phia_tx *)(in_txn()->engine_tx);
-	int rc = phia_upsert(tx, obj);
-	free(value);
+	int rc = phia_upsert(tx, tuple);
 	if (rc == -1)
 		phia_raise();
 }

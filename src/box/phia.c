@@ -2497,11 +2497,6 @@ struct PACKED sfvar {
 	uint32_t size;
 };
 
-struct sfv {
-	char     *pointer;
-	uint32_t  size;
-};
-
 static inline char*
 sf_fieldof_ptr(struct sfscheme *s, struct sffield *f, char *data, uint32_t *size)
 {
@@ -2546,7 +2541,7 @@ sf_fieldsize(struct sfscheme *s, int pos, char *data)
 }
 
 static inline int
-sf_writesize(struct sfscheme *s, struct sfv *v)
+sf_writesize(struct sfscheme *s, struct phia_tuple_field *v)
 {
 	int sum = s->var_offset;
 	int i;
@@ -2560,7 +2555,7 @@ sf_writesize(struct sfscheme *s, struct sfv *v)
 }
 
 static inline void
-sf_write(struct sfscheme *s, struct sfv *v, char *dest)
+sf_write(struct sfscheme *s, struct phia_tuple_field *v, char *dest)
 {
 	int var_value_offset =
 		s->var_offset + sizeof(struct sfvar) * s->var_count;
@@ -2570,13 +2565,13 @@ sf_write(struct sfscheme *s, struct sfv *v, char *dest)
 		struct sffield *f = s->fields[i];
 		if (f->fixed_size) {
 			assert(f->fixed_size == v[i].size);
-			memcpy(dest + f->fixed_offset, v[i].pointer, f->fixed_size);
+			memcpy(dest + f->fixed_offset, v[i].data, f->fixed_size);
 			continue;
 		}
 		struct sfvar *current = &var[f->position_ref];
 		current->offset = var_value_offset;
 		current->size   = v[i].size;
-		memcpy(dest + var_value_offset, v[i].pointer, v[i].size);
+		memcpy(dest + var_value_offset, v[i].data, v[i].size);
 		var_value_offset += current->size;
 	}
 }
@@ -2628,102 +2623,6 @@ sf_comparable_write(struct sfscheme *s, char *src, char *dest)
 		char *ptr = sf_fieldof_ptr(s, f, src, &current->size);
 		memcpy(dest + var_value_offset, ptr, current->size);
 		var_value_offset += current->size;
-	}
-}
-
-struct sflimit {
-	uint32_t u32_min;
-	uint32_t u32_max;
-	uint64_t u64_min;
-	uint64_t u64_max;
-	char    *string_min;
-	int      string_min_size;
-	char    *string_max;
-	int      string_max_size;
-};
-
-static inline int
-sf_limitinit(struct sflimit *b, struct ssa *a)
-{
-	b->u32_min = 0;
-	b->u32_max = UINT32_MAX;
-	b->u64_min = 0;
-	b->u64_max = UINT64_MAX;
-	b->string_min_size = 0;
-	b->string_min = "";
-	b->string_max_size = 1024;
-	b->string_max = ss_malloc(a, b->string_max_size);
-	if (unlikely(b->string_max == NULL))
-		return -1;
-	memset(b->string_max, 0xff, b->string_max_size);
-	return 0;
-}
-
-static inline void
-sf_limitfree(struct sflimit *b, struct ssa *a)
-{
-	if (b->string_max)
-		ss_free(a, b->string_max);
-}
-
-static inline void
-sf_limitset(struct sflimit *b, struct sfscheme *s, struct sfv *fields, enum phia_order order)
-{
-	int i;
-	for (i = 0; i < s->fields_count; i++) {
-		struct sfv *v = &fields[i];
-		if (v->pointer)
-			continue;
-		struct sffield *part = s->fields[i];
-		switch (part->type) {
-		case SS_U32:
-			if (order == PHIA_LT || order == PHIA_LE) {
-				v->pointer = (char*)&b->u32_max;
-				v->size = sizeof(uint32_t);
-			} else {
-				v->pointer = (char*)&b->u32_min;
-				v->size = sizeof(uint32_t);
-			}
-			break;
-		case SS_U32REV:
-			if (order == PHIA_LT || order == PHIA_LE) {
-				v->pointer = (char*)&b->u32_min;
-				v->size = sizeof(uint32_t);
-			} else {
-				v->pointer = (char*)&b->u32_max;
-				v->size = sizeof(uint32_t);
-			}
-			break;
-		case SS_U64:
-			if (order == PHIA_LT || order == PHIA_LE) {
-				v->pointer = (char*)&b->u64_max;
-				v->size = sizeof(uint64_t);
-			} else {
-				v->pointer = (char*)&b->u64_min;
-				v->size = sizeof(uint64_t);
-			}
-			break;
-		case SS_U64REV:
-			if (order == PHIA_LT || order == PHIA_LE) {
-				v->pointer = (char*)&b->u64_min;
-				v->size = sizeof(uint64_t);
-			} else {
-				v->pointer = (char*)&b->u64_max;
-				v->size = sizeof(uint64_t);
-			}
-			break;
-		case SS_STRING:
-			if (order == PHIA_LT || order == PHIA_LE) {
-				v->pointer = b->string_max;
-				v->size = b->string_max_size;
-			} else {
-				v->pointer = b->string_min;
-				v->size = b->string_min_size;
-			}
-			break;
-		default: assert(0);
-			break;
-		}
 	}
 }
 
@@ -3696,6 +3595,7 @@ sv_hash(struct sv *v, struct sfscheme *scheme) {
 }
 
 struct PACKED phia_tuple {
+	struct db *db;
 	uint64_t lsn;
 	uint32_t size;
 	uint8_t  flags;
@@ -3710,13 +3610,18 @@ phia_tuple_size(struct phia_tuple *v) {
 	return sizeof(struct phia_tuple) + v->size;
 }
 
-static inline struct phia_tuple*
-phia_tuple_build(struct runtime *r, struct sfscheme *scheme, struct sfv *fields)
+struct phia_tuple *
+phia_tuple_new(struct phia_index *db, struct phia_tuple_field *fields,
+	       int fields_count)
 {
+	struct sfscheme *scheme = &db->index->scheme;
+	assert(fields_count == scheme->keys_count);
 	int size = sf_writesize(scheme, fields);
-	struct phia_tuple *v = ss_malloc(r->a, sizeof(struct phia_tuple) + size);
+	struct phia_tuple *v = ss_malloc(db->index->r->a,
+					 sizeof(struct phia_tuple) + size);
 	if (unlikely(v == NULL))
 		return NULL;
+	v->db        = db;
 	v->size      = size;
 	v->lsn       = 0;
 	v->flags     = 0;
@@ -3724,11 +3629,30 @@ phia_tuple_build(struct runtime *r, struct sfscheme *scheme, struct sfv *fields)
 	char *ptr = v->data;
 	sf_write(scheme, fields, ptr);
 	/* update runtime statistics */
-	tt_pthread_mutex_lock(&r->stat->lock);
+	tt_pthread_mutex_lock(&db->index->r->stat->lock);
 	r->stat->v_count++;
 	r->stat->v_allocated += sizeof(struct phia_tuple) + size;
-	tt_pthread_mutex_unlock(&r->stat->lock);
+	tt_pthread_mutex_unlock(&db->index->r->stat->lock);
 	return v;
+}
+
+struct phia_tuple *
+phia_tuple_new_key(struct phia_index *db, struct sfv *fields, int fields_count,
+		   enum phia_order order)
+{
+
+	struct sfscheme *scheme = &db->index->scheme;
+	struct phia_env *env = db->env;
+
+	if (unlikely(o->fields_count != scheme->keys_count)) {
+		/* set unspecified min/max keys, depending on
+		 * iteration order */
+		sf_limitset(&env->limit, scheme, fields, order);
+		o->fields_count = scheme->fields_count;
+		o->fields_count_keys = scheme->keys_count;
+	}
+
+	return phia_tuple_new(db, fields);
 }
 
 static inline struct phia_tuple*
@@ -3761,14 +3685,15 @@ sv_vdup(struct runtime *r, struct sv *src)
 	return v;
 }
 
-static inline void
+void
 phia_tuple_ref(struct phia_tuple *v) {
 	v->refs++;
 }
 
-static inline int
-phia_tuple_unref(struct runtime *r, struct phia_tuple *v)
+int
+phia_tuple_unref(struct phia_tuple *v)
 {
+	struct runtime *r = v->index->r;
 	if (likely(--v->refs == 0)) {
 		uint32_t size = phia_tuple_size(v);
 		/* update runtime statistics */
@@ -3782,6 +3707,40 @@ phia_tuple_unref(struct runtime *r, struct phia_tuple *v)
 		return 1;
 	}
 	return 0;
+}
+
+int64_t
+phia_tuple_lsn(struct phia_tuple *tuple)
+{
+	return tuple->lsn;
+}
+
+char *
+phia_tuple_field(struct phia_tuple *tuple, uint32_t field_id, uint32_t *size)
+{
+	struct sfscheme *scheme = &db->index->scheme;
+	assert(fields_count <= scheme->keys_count);
+	struct sffield *field = scheme->fields[field_id];
+	return sf_fieldof(&db->index->scheme, field->position,
+			  tuple->data, size);
+}
+
+void
+phia_tuple_fields(struct phia_tuple *tuple, struct phia_tuple_fields *fields,
+		  int fields_count)
+{
+	assert(fields_count <= scheme->keys_count);
+	for (struct phia_tuple_field *field = fields;
+	     field < fields + fields_count; field++) {
+		field->data = sf_fieldof(&db->index->scheme, i, &field->size);
+	}
+}
+
+struct phia_tuple_field *
+vooid
+phia_tuple_fields(struct phia_tuple *tuple, )
+{
+	return v->
 }
 
 struct PACKED svref {
@@ -3811,7 +3770,7 @@ sv_reffree(struct runtime *r, struct svref *v)
 {
 	while (v) {
 		struct svref *n = v->next;
-		phia_tuple_unref(r, v->v);
+		phia_tuple_unref(v->v);
 		ss_free(r->a, v);
 		v = n;
 	}
@@ -5190,7 +5149,7 @@ sx_valloc(struct sxvpool *p, struct phia_tuple *ref)
 static inline void
 sx_vfree(struct sxvpool *p, struct sxv *v)
 {
-	phia_tuple_unref(p->r, v->v);
+	phia_tuple_unref(v->v);
 	sx_vpool_push(p, v);
 }
 
@@ -5632,7 +5591,7 @@ sx_rollback_svp(struct sx *x, struct ssbufiter *i, int free)
 		sv_init(&lv->v, &sv_vif, v->v, NULL);
 		if (free) {
 			int size = phia_tuple_size((struct phia_tuple*)v->v);
-			if (phia_tuple_unref(m->r, v->v))
+			if (phia_tuple_unref(v->v))
 				gc += size;
 		}
 		sx_vpool_push(&m->pool, v);
@@ -5653,7 +5612,7 @@ static enum sxstate sx_rollback(struct sx *x)
 			struct svlogv *lv = ss_bufiter_get(&i);
 			struct phia_tuple *v = lv->v.v;
 			int size = phia_tuple_size(v);
-			if (phia_tuple_unref(m->r, v))
+			if (phia_tuple_unref(v))
 				gc += size;
 		}
 		ss_quota(m->r->quota, SS_QREMOVE, gc);
@@ -5780,7 +5739,7 @@ static int sx_set(struct sx *x, struct sxindex *index, struct phia_tuple *versio
 	struct sxv *v = sx_valloc(&m->pool, version);
 	if (unlikely(v == NULL)) {
 		ss_quota(r->quota, SS_QREMOVE, phia_tuple_size(version));
-		phia_tuple_unref(r, version);
+		phia_tuple_unref(version);
 		return -1;
 	}
 	v->id = x->id;
@@ -9560,7 +9519,7 @@ static uint32_t si_gcref(struct runtime *r, struct svref *gc)
 	while (v) {
 		struct svref *n = v->next;
 		uint32_t size = phia_tuple_size(v->v);
-		if (phia_tuple_unref(r, v->v))
+		if (phia_tuple_unref(v->v))
 			used += size;
 		ss_free(r->a, v);
 		v = n;
@@ -11733,13 +11692,13 @@ si_write(struct sitx *x, struct svlog *l, struct svlogindex *li, uint64_t time,
 		if (recover) {
 			if (si_readcommited(x->index, &cv->v, recover)) {
 				size_t gc = phia_tuple_size(v);
-				if (phia_tuple_unref(r, v))
+				if (phia_tuple_unref(v))
 					ss_quota(r->quota, SS_QREMOVE, gc);
 				goto next;
 			}
 		}
 		if (v->flags & SVGET) {
-			phia_tuple_unref(r, v);
+			phia_tuple_unref(v);
 			goto next;
 		}
 		si_set(x, v, time);
@@ -12482,7 +12441,6 @@ struct phia_env {
 	struct sxmanager   xm;
 	struct scheduler          scheduler;
 	struct srstat      stat;
-	struct sflimit     limit;
 	struct runtime          r;
 };
 
@@ -12498,14 +12456,6 @@ struct phia_index {
 	struct rlist link;
 };
 
-struct phia_document {
-	struct phia_index *db;
-	struct phia_tuple *value;
-	struct sfv       fields[8];
-	int       fields_count;
-	int       fields_count_keys;
-};
-
 struct scheduler *
 phia_env_get_scheduler(struct phia_env *env)
 {
@@ -12518,30 +12468,15 @@ phia_raise()
 	diag_raise();
 }
 
-int
-phia_document_delete(struct phia_document *v)
-{
-	struct phia_env *e = v->db->env;
-	if (v->value != NULL)
-		phia_tuple_unref(v->db->index->r, v->value);
-	v->value = NULL;
-	ss_free(&e->a, v);
-	return 0;
-}
-
 static inline int
-phia_document_build(struct phia_document *o, enum phia_order order);
-
-static inline int
-phia_document_validate(struct phia_document *o, struct phia_index *dest, uint8_t flags)
+phia_tuple_validate(struct phia_tuple *o, struct phia_index *dest, uint8_t flags)
 {
 	struct phia_env *e = o->db->env;
-	if (unlikely(o->db != dest))
-		return sr_error("%s", "incompatible document parent db");
-	o->value->flags = flags;
-	if (o->value->lsn != 0) {
+	assert(o->db == dest);
+	o->flags = flags;
+	if (o->lsn != 0) {
 		uint64_t lsn = sr_seq(&e->seq, SR_LSN);
-		if (o->value->lsn <= lsn)
+		if (o->lsn <= lsn)
 			return sr_error("%s", "incompatible document lsn");
 	}
 	return 0;
@@ -13071,7 +13006,7 @@ phia_cursor_delete(struct phia_cursor *c)
 	if (c->cache)
 		si_cachepool_push(c->cache);
 	if (c->key)
-		phia_tuple_unref(c->db->index->r, c->key);
+		phia_tuple_unref(c->key);
 	phia_index_unbind(c->db, id);
 	sr_statcursor(&e->stat, c->start,
 	              c->read_disk,
@@ -13081,7 +13016,7 @@ phia_cursor_delete(struct phia_cursor *c)
 }
 
 int
-phia_cursor_next(struct phia_cursor *c, struct phia_document **result,
+phia_cursor_next(struct phia_cursor *c, struct phia_tuple **result,
 		 bool cache_only)
 {
 	struct phia_index *db = c->db;
@@ -13092,27 +13027,20 @@ phia_cursor_next(struct phia_cursor *c, struct phia_document **result,
 	struct phia_tuple *value;
 	struct phia_statget statget;
 	assert(c->key != NULL);
-	if (phia_index_read(db, c->key, c->order, &value, x, 0, c->cache,
+	if (phia_index_read(db, c->key, c->order, result, x, 0, c->cache,
 			    cache_only, &statget) != 0) {
 		return -1;
 	}
 
 	c->ops++;
-	if (value == NULL) {
+	if (*result == NULL) {
 		if (!cache_only) {
-			 phia_tuple_unref(db->index->r, c->key);
+			 phia_tuple_unref(c->key);
 			 c->key = NULL;
 		}
-		 *result = NULL;
 		 return 0;
 	}
 
-	struct phia_document *doc = phia_document_new(db);
-	if (unlikely(doc == NULL)) {
-		phia_tuple_unref(db->index->r, value);
-		return -1;
-	}
-	doc->value = value;
 	if (c->order == PHIA_GE)
 		c->order = PHIA_GT;
 	else if (c->order == PHIA_LE)
@@ -13121,7 +13049,7 @@ phia_cursor_next(struct phia_cursor *c, struct phia_document **result,
 	c->read_disk += statget.read_disk;
 	c->read_cache += statget.read_cache;
 
-	phia_tuple_unref(db->index->r, c->key);
+	phia_tuple_unref(c->key);
 	c->key = value;
 	phia_tuple_ref(c->key);
 
@@ -13137,14 +13065,9 @@ phia_cursor_set_read_commited(struct phia_cursor *c, bool read_commited)
 }
 
 struct phia_cursor *
-phia_cursor_new(struct phia_index *db, struct phia_document *key,
+phia_cursor_new(struct phia_index *db, struct phia_tuple *key,
 		enum phia_order order)
 {
-	/* prepare the key */
-	int rc = phia_document_build(key, order);
-	if (unlikely(rc == -1))
-		return NULL;
-
 	struct phia_env *e = db->env;
 	struct phia_cursor *c;
 	c = ss_malloc(&e->a, sizeof(struct phia_cursor));
@@ -13170,9 +13093,8 @@ phia_cursor_new(struct phia_index *db, struct phia_document *key,
 	sx_begin(&e->xm, &c->t, SXRO, &c->log, vlsn);
 	phia_index_bind(db);
 
+	/* Transfer ownership of key to cursor */
 	c->key = key->value;
-	phia_tuple_ref(c->key);
-	phia_document_delete(key);
 	c->order = order;
 	return c;
 }
@@ -13488,7 +13410,7 @@ phia_index_read(struct phia_index *db, struct phia_tuple *key, enum phia_order o
 		cache = si_cachepool_pop(&e->cachepool);
 		if (unlikely(cache == NULL)) {
 			if (vup != NULL)
-				phia_tuple_unref(db->index->r, vup);
+				phia_tuple_unref(vup);
 			sr_oom();
 			return -1;
 		}
@@ -13525,7 +13447,7 @@ phia_index_read(struct phia_index *db, struct phia_tuple *key, enum phia_order o
 	si_readclose(&q);
 
 	if (vup != NULL) {
-		phia_tuple_unref(db->index->r, vup);
+		phia_tuple_unref(vup);
 	}
 	/* free read cache */
 	if (likely(cachegc))
@@ -13560,37 +13482,21 @@ phia_index_read(struct phia_index *db, struct phia_tuple *key, enum phia_order o
 }
 
 int
-phia_index_get(struct phia_index *db, struct phia_document *key,
-	       struct phia_document **result, bool cache_only)
+phia_index_get(struct phia_index *db, struct phia_tuple *key,
+	       struct phia_tuple **result, bool cache_only)
 {
 	assert(key->db == db);
 
-	/* prepare the key */
-	int rc = phia_document_build(key, PHIA_EQ);
-	if (unlikely(rc == -1))
-		return -1;
-
-	struct phia_tuple *value;
 	struct phia_statget statget;
-	if (phia_index_read(db, key->value, PHIA_EQ, &value, NULL, 0, NULL,
+	if (phia_index_read(db, key->value, PHIA_EQ, result, NULL, 0, NULL,
 			    cache_only, &statget) != 0) {
 		return -1;
 	}
 
-	if (value == NULL) {
-		 *result = NULL;
+	if (*result == NULL)
 		 return 0;
-	}
 
-	struct phia_document *doc = phia_document_new(db);
-	if (unlikely(doc == NULL)) {
-		phia_tuple_unref(db->index->r, value);
-		return -1;
-	}
-	doc->value = value;
 	sr_statget(&db->env->stat, &statget);
-
-	*result = doc;
 	return 0;
 }
 
@@ -13708,109 +13614,7 @@ static int phia_index_recoverend(struct phia_index *db)
 }
 
 static inline int
-phia_document_build(struct phia_document *o, enum phia_order order)
-{
-	struct phia_index *db = o->db;
-	struct sfscheme *scheme = &db->index->scheme;
-	struct phia_env *e = db->env;
-
-	if (likely(o->value != NULL))
-		return 0;
-
-	assert(o->value == NULL);
-
-	/* create document using current format, supplied
-	 * key-chain and value */
-	if (unlikely(o->fields_count_keys != scheme->keys_count))
-	{
-		/* set unspecified min/max keys, depending on
-		 * iteration order */
-		sf_limitset(&e->limit, scheme, o->fields, order);
-		o->fields_count = scheme->fields_count;
-		o->fields_count_keys = scheme->keys_count;
-	}
-
-	struct phia_tuple *v = phia_tuple_build(db->index->r, scheme, o->fields);
-	if (unlikely(v == NULL))
-		return sr_oom();
-	o->value = v;
-	return 0;
-}
-
-int
-phia_document_set_field(struct phia_document *v, const char *path,
-			const char *pointer, int size)
-{
-	struct phia_index *db = v->db;
-	struct phia_env *e = db->env;
-	struct sffield *field = sf_schemefind(&db->index->scheme, (char*)path);
-	if (unlikely(field == NULL))
-		return -1;
-	assert(field->position < (int)(sizeof(v->fields) / sizeof(struct sfv)));
-	struct sfv *fv = &v->fields[field->position];
-	if (size == 0)
-		size = strlen(pointer);
-	int fieldsize_max;
-	if (field->key) {
-		fieldsize_max = 1024;
-	} else {
-		fieldsize_max = 2 * 1024 * 1024;
-	}
-	if (unlikely(size > fieldsize_max)) {
-		sr_error("field '%s' is too big (%d limit)",
-		         pointer, fieldsize_max);
-		return -1;
-	}
-	if (fv->pointer == NULL) {
-		v->fields_count++;
-		if (field->key)
-			v->fields_count_keys++;
-	}
-	fv->pointer = (char *)pointer;
-	fv->size = size;
-	sr_statkey(&e->stat, size);
-	return 0;
-}
-
-char *
-phia_document_field(struct phia_document *v, const char *path, uint32_t *size)
-{
-	/* match field */
-	struct phia_index *db = v->db;
-	struct sffield *field = sf_schemefind(&db->index->scheme, (char*)path);
-	if (unlikely(field == NULL))
-		return NULL;
-	/* result document */
-	assert(v->value);
-	return sf_fieldof(&db->index->scheme, field->position,
-			  v->value->data, size);
-}
-
-int64_t
-phia_document_lsn(struct phia_document *v)
-{
-	if (v->value == NULL)
-		return -1;
-	return v->value->lsn;
-}
-
-struct phia_document *
-phia_document_new(struct phia_index *db)
-{
-	struct phia_env *e = db->env;
-	struct phia_document *doc;
-	doc = ss_malloc(&e->a, sizeof(struct phia_document));
-	if (unlikely(doc == NULL)) {
-		sr_oom();
-		return NULL;
-	}
-	memset(doc, 0, sizeof(*doc));
-	doc->db = db;
-	return doc;
-}
-
-static inline int
-phia_tx_write(struct phia_tx *t, struct phia_document *o, uint8_t flags)
+phia_tx_write(struct phia_tx *t, struct phia_tuple *o, uint8_t flags)
 {
 	struct phia_env *e = t->env;
 	struct phia_index *db = o->db;
@@ -13839,47 +13643,44 @@ phia_tx_write(struct phia_tx *t, struct phia_document *o, uint8_t flags)
 		return -1;
 	}
 
-	/* create document */
-	int rc = phia_document_build(o, PHIA_EQ);
-	if (unlikely(rc == -1))
-		return -1;
-	rc = phia_document_validate(o, db, flags);
+	int rc = phia_tuple_validate(o, db, flags);
 	if (unlikely(rc == -1))
 		return -1;
 
-	phia_tuple_ref(o->value);
-	int size = phia_tuple_size(o->value);
+	phia_tuple_ref(o);
 
 	/* concurrent index only */
-	rc = sx_set(&t->t, &db->coindex, o->value);
-	phia_document_delete(o);
+	rc = sx_set(&t->t, &db->coindex, o);
 	if (unlikely(rc != 0))
 		return -1;
+
+	int size = phia_tuple_size(o->value);
 	ss_quota(&e->quota, SS_QADD, size);
+	phia_tuple_unref(o);
 	return 0;
 }
 
 int
-phia_replace(struct phia_tx *tx, struct phia_document *key)
+phia_replace(struct phia_tx *tx, struct phia_tuple *tuple)
 {
-	return phia_tx_write(tx, key, 0);
+	return phia_tx_write(tx, tuple, 0);
 }
 
 int
-phia_upsert(struct phia_tx *tx, struct phia_document *key)
+phia_upsert(struct phia_tx *tx, struct phia_tuple *tuple)
 {
-	return phia_tx_write(tx, key, SVUPSERT);
+	return phia_tx_write(tx, tuple, SVUPSERT);
 }
 
 int
-phia_delete(struct phia_tx *tx, struct phia_document *key)
+phia_delete(struct phia_tx *tx, struct phia_tuple *tuple)
 {
-	return phia_tx_write(tx, key, SVDELETE);
+	return phia_tx_write(tx, tuple, SVDELETE);
 }
 
 int
-phia_get(struct phia_tx *t, struct phia_document *key,
-	 struct phia_document **result, bool cache_only)
+phia_get(struct phia_tx *t, struct phia_tuple *key,
+	 struct phia_tuple **result, bool cache_only)
 {
 	struct phia_index *db = key->db;
 	/* validate index */
@@ -13901,31 +13702,16 @@ phia_get(struct phia_tx *t, struct phia_document *key,
 		return -1;
 	}
 
-	/* prepare the key */
-	int rc = phia_document_build(key, PHIA_EQ);
-	if (unlikely(rc == -1))
-		return -1;
-
-	struct phia_tuple *value;
 	struct phia_statget statget;
-	if (phia_index_read(db, key->value, PHIA_EQ, &value, &t->t, 1, NULL,
+	if (phia_index_read(db, key, PHIA_EQ, result, &t->t, 1, NULL,
 			    cache_only, &statget) != 0) {
 		return -1;
 	}
 
-	if (value == NULL) {
-		 *result = NULL;
-		 return 0;
-	}
+	if (*result == NULL)
+		return 0;
 
-	struct phia_document *doc = phia_document_new(db);
-	if (unlikely(doc == NULL)) {
-		phia_tuple_unref(db->index->r, value);
-		return -1;
-	}
-	doc->value = value;
 	sr_statget(&db->env->stat, &statget);
-
 	*result = doc;
 	return 0;
 }
@@ -13980,7 +13766,7 @@ phia_tx_prepare(struct sx *x, struct sv *v, struct phia_index *db,
 	si_readclose(&q);
 
 	if (unlikely(q.result))
-		phia_tuple_unref(db->index->r, q.result);
+		phia_tuple_unref(q.result);
 	return rc;
 }
 
