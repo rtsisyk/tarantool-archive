@@ -32,6 +32,7 @@
  */
 
 #include "index.h"
+#include "phia.h"
 
 class PhiaIndex: public Index {
 public:
@@ -42,6 +43,8 @@ public:
 	replace(struct tuple*,
 	        struct tuple*, enum dup_replace_mode) override;
 
+	struct tuple *
+	findByKey(struct phia_tuple *tuple) const;
 	virtual struct tuple*
 	findByKey(const char *key, uint32_t) const override;
 
@@ -60,7 +63,15 @@ public:
 	struct phia_env *env;
 	struct phia_index *db;
 
-	struct phia_document *createDocument(const char *key, const char **keyend);
+	struct phia_tuple *
+	createKey(const char *key, uint32_t key_part_count,
+		  enum phia_order order) const;
+	struct phia_tuple *
+	createTuple(const char *data, const char *data_end) const;
+	struct phia_tuple *
+	createUpsert(const char *data, const char *data_end,
+		     const char *expr, const char *expr_end,
+		     uint8_t index_base) const;
 private:
 	struct tuple_format *format;
 };
