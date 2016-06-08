@@ -57,7 +57,12 @@ PhiaSpace::applySnapshotRow(struct space *space, struct request *request)
 	assert(request->header != NULL);
 	PhiaIndex *index = (PhiaIndex *)index_find(space, 0);
 
+	/* Check field count in tuple */
 	space_validate_tuple_raw(space, request->tuple);
+
+	/* Check tuple fields */
+	tuple_validate_raw(space->format, request->tuple);
+
 	struct phia_tuple *tuple = index->createTuple(request->tuple,
 						      request->tuple_end);
 	auto tuple_guard = make_scoped_guard([=]{
@@ -388,6 +393,9 @@ PhiaSpace::executeUpsert(struct txn*, struct space *space,
 
 	/* Check field count in tuple */
 	space_validate_tuple_raw(space, request->tuple);
+
+	/* Check tuple fields */
+	tuple_validate_raw(space->format, request->tuple);
 
 	struct phia_tuple *tuple = index->createUpsert(request->tuple,
 		request->tuple_end, request->ops, request->ops_end,

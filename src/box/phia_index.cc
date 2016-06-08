@@ -124,7 +124,13 @@ PhiaIndex::createKey(const char *key, uint32_t part_count,
 struct phia_tuple *
 PhiaIndex::createTuple(const char *data, const char *data_end) const
 {
-	(void) mp_decode_array(&data);
+	uint32_t count = mp_decode_array(&data);
+	assert(count >= key_def->part_count);
+	(void) count;
+
+	const char *key = data;
+	primary_key_validate(key_def, key, key_def->part_count);
+
 	struct phia_field *fields = fields_buf; /* use global buffer */
 	phia_set_fields(key_def, fields, &data, key_def->part_count);
 	/* Value is stored after key parts */
@@ -139,8 +145,7 @@ PhiaIndex::createUpsert(const char *data, const char *data_end,
 			const char *expr, const char *expr_end,
 			uint8_t index_base) const
 {
-	uint32_t part_count = mp_decode_array(&data);
-	primary_key_validate(key_def, data, part_count);
+	(void) mp_decode_array(&data);
 
 	struct phia_field *fields = fields_buf; /* use global buffer */
 	phia_set_fields(key_def, fields, &data, key_def->part_count);

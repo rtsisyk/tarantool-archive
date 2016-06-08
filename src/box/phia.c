@@ -13436,7 +13436,6 @@ phia_tuple_new(struct phia_index *db, struct phia_field *fields,
 	r->stat->v_count++;
 	r->stat->v_allocated += sizeof(struct phia_tuple) + size;
 	tt_pthread_mutex_unlock(&db->index->r->stat->lock);
-	say_warn("phia_tuple_new: %p", v);
 	return v;
 }
 
@@ -13460,7 +13459,6 @@ phia_tuple_from_sv(struct runtime *r, struct sv *sv)
 	r->stat->v_count++;
 	r->stat->v_allocated += sizeof(struct phia_tuple) + size;
 	tt_pthread_mutex_unlock(&r->stat->lock);
-	say_warn("phia_tuple_new_sv: %p", v);
 	return v;
 }
 
@@ -13468,13 +13466,11 @@ void
 phia_tuple_ref(struct phia_tuple *v)
 {
 	v->refs++;
-	say_warn("phia_tuple_ref: %p %d", v, v->refs);
 }
 
 static int
 phia_tuple_unref_rt(struct runtime *r, struct phia_tuple *v)
 {
-	say_warn("phia_tuple_unref: %p %d", v, v->refs -1);
 	assert(v->refs > 0);
 	if (likely(--v->refs == 0)) {
 		uint32_t size = phia_tuple_size(v);
@@ -13486,7 +13482,6 @@ phia_tuple_unref_rt(struct runtime *r, struct phia_tuple *v)
 		r->stat->v_allocated -= size;
 		tt_pthread_mutex_unlock(&r->stat->lock);
 		ss_free(r->a, v);
-		say_warn("phia_tuple_delete: %p", v);
 		return 1;
 	}
 	return 0;
