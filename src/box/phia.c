@@ -13044,6 +13044,7 @@ sf_schemecreate(struct sfscheme *scheme, struct ssa *a,
 		sr_error("incomplete scheme %s", "");
 		goto error;
 	}
+	assert(scheme->fields_count == scheme->keys_count + 1);
 	return 0;
 error:
 	return -1;
@@ -13419,7 +13420,7 @@ phia_tuple_new(struct phia_index *db, struct phia_field *fields,
 {
 	struct sfscheme *scheme = &db->index->scheme;
 	struct runtime *r = db->index->r;
-	assert(fields_count == scheme->keys_count);
+	assert(fields_count == scheme->fields_count);
 	int size = sf_writesize(scheme, fields);
 	struct phia_tuple *v = ss_malloc(r->a, sizeof(struct phia_tuple) + size);
 	if (unlikely(v == NULL))
@@ -13435,6 +13436,7 @@ phia_tuple_new(struct phia_index *db, struct phia_field *fields,
 	r->stat->v_count++;
 	r->stat->v_allocated += sizeof(struct phia_tuple) + size;
 	tt_pthread_mutex_unlock(&db->index->r->stat->lock);
+	say_warn("phia_tuple_new: %p", v);
 	return v;
 }
 
@@ -13458,6 +13460,7 @@ phia_tuple_from_sv(struct runtime *r, struct sv *sv)
 	r->stat->v_count++;
 	r->stat->v_allocated += sizeof(struct phia_tuple) + size;
 	tt_pthread_mutex_unlock(&r->stat->lock);
+	say_warn("phia_tuple_new_sv: %p", v);
 	return v;
 }
 
@@ -13465,11 +13468,14 @@ void
 phia_tuple_ref(struct phia_tuple *v)
 {
 	v->refs++;
+	say_warn("phia_tuple_ref: %p %d", v, v->refs);
 }
 
 static int
 phia_tuple_unref_rt(struct runtime *r, struct phia_tuple *v)
 {
+	say_warn("phia_tuple_unref: %p %d", v, v->refs -1);
+	assert(v->refs > 0);
 	if (likely(--v->refs == 0)) {
 		uint32_t size = phia_tuple_size(v);
 		/* update runtime statistics */
@@ -13480,6 +13486,7 @@ phia_tuple_unref_rt(struct runtime *r, struct phia_tuple *v)
 		r->stat->v_allocated -= size;
 		tt_pthread_mutex_unlock(&r->stat->lock);
 		ss_free(r->a, v);
+		say_warn("phia_tuple_delete: %p", v);
 		return 1;
 	}
 	return 0;
@@ -13515,7 +13522,7 @@ phia_tuple_fields(struct phia_index *db, struct phia_tuple *tuple,
 {
 	struct si *index = db->index;
 	struct sfscheme *scheme = &index->scheme;
-	assert(fields_count <= scheme->keys_count);
+	assert(fields_count <= scheme->fields_count);
 	for (int i = 0; i < fields_count; i++) {
 		struct phia_field *field = &fields[i];
 		field->data = sf_fieldof(&index->scheme, i, tuple->data,

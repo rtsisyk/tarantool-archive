@@ -72,8 +72,8 @@ struct phia_tx;
 struct phia_cursor;
 
 int
-phia_coget(struct phia_tx *tx, struct phia_tuple *key,
-	   struct phia_tuple **result);
+phia_coget(struct phia_tx *tx, struct phia_index *index,
+	   struct phia_tuple *key, struct phia_tuple **result);
 int
 phia_index_coget(struct phia_index *index, struct phia_tuple *key,
 		 struct phia_tuple **result);

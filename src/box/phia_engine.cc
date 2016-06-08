@@ -308,10 +308,10 @@ phia_index_coget(struct phia_index *index, struct phia_tuple *key,
 }
 
 int
-phia_coget(struct phia_tx *tx, struct phia_tuple *key,
-	   struct phia_tuple **result)
+phia_coget(struct phia_tx *tx, struct phia_index *index,
+	   struct phia_tuple *key, struct phia_tuple **result)
 {
-	return phia_read_task(NULL, tx, NULL, key, result, phia_get_cb);
+	return phia_read_task(index, tx, NULL, key, result, phia_get_cb);
 }
 
 int
