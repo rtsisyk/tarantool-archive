@@ -6316,49 +6316,10 @@ struct siplanner {
 #define SI_LRU           8192
 #define SI_NODEGC        16384
 
-/* explain */
-#define SI_ENONE         0
-#define SI_ERETRY        1
-#define SI_EINDEX_SIZE   2
-#define SI_EINDEX_AGE    3
-#define SI_EBRANCH_COUNT 4
-
-struct siplan {
-	int explain;
-	int plan;
-	/* branch:
-	 *   a: index_size
-	 * age:
-	 *   a: ttl
-	 *   b: ttl_wm
-	 * compact:
-	 *   a: branches
-	 *   b: mode
-	 * compact_index:
-	 *   a: index_size
-	 * checkpoint:
-	 *   a: lsn
-	 * nodegc:
-	 * gc:
-	 *   a: lsn
-	 *   b: percent
-	 * lru:
-	 * temperature:
-	 * snapshot:
-	 *   a: ssn
-	 * shutdown:
-	 * drop:
-	 */
-	uint64_t a, b, c;
-	struct sinode *node;
-};
-
-static int si_planinit(struct siplan*);
 static int si_plannerinit(struct siplanner*, void*);
 static int si_plannerfree(struct siplanner*);
 static int si_plannerupdate(struct siplanner*, int, struct sinode*);
 static int si_plannerremove(struct siplanner*, int, struct sinode*);
-static int si_planner(struct siplanner*, struct siplan*);
 
 typedef rb_tree(struct sinode) sinode_tree_t;
 
@@ -6443,7 +6404,7 @@ struct vinyl_index {
 	struct siconf   conf;
 	struct key_def *key_def;
 	struct runtime *r;
-	/** Member of env->db or scheduler->shutdown. */
+	/** Member of env->db */
 	struct rlist     link;
 };
 
@@ -6485,9 +6446,6 @@ static int si_recover(struct vinyl_index*);
 static int si_insert(struct vinyl_index*, struct sinode*);
 static int si_remove(struct vinyl_index*, struct sinode*);
 static int si_replace(struct vinyl_index*, struct sinode*, struct sinode*);
-static int si_plan(struct vinyl_index*, struct siplan*);
-static int
-si_execute(struct vinyl_index*, struct sdc*, struct siplan*, uint64_t, uint64_t);
 
 static inline void
 si_lru_add(struct vinyl_index *index, struct svref *ref)
@@ -6899,13 +6857,6 @@ static int
 si_merge(struct vinyl_index*, struct sdc*, struct sinode*, uint64_t,
 	 uint64_t, struct svmergeiter*, uint64_t, uint32_t);
 
-static int si_branch(struct vinyl_index*, struct sdc*, struct siplan*, uint64_t);
-static int
-si_compact(struct vinyl_index*, struct sdc*, struct siplan*, uint64_t,
-	   uint64_t, struct ssiter*, uint64_t);
-static int
-si_compact_index(struct vinyl_index*, struct sdc*, struct siplan*, uint64_t, uint64_t);
-
 typedef rb_tree(struct sinode) sinode_id_tree_t;
 
 static int
@@ -7032,43 +6983,6 @@ static int si_replace(struct vinyl_index *index, struct sinode *o, struct sinode
 	return 0;
 }
 
-static int si_plan(struct vinyl_index *index, struct siplan *plan)
-{
-	si_lock(index);
-	int rc = si_planner(&index->p, plan);
-	si_unlock(index);
-	return rc;
-}
-
-static int
-si_execute(struct vinyl_index *index, struct sdc *c, struct siplan *plan,
-	   uint64_t vlsn, uint64_t vlsn_lru)
-{
-	int rc = -1;
-	switch (plan->plan) {
-	case SI_NODEGC:
-		rc = si_nodefree(plan->node, index->r, 1);
-		break;
-	case SI_CHECKPOINT:
-	case SI_BRANCH:
-	case SI_AGE:
-		rc = si_branch(index, c, plan, vlsn);
-		break;
-	case SI_LRU:
-	case SI_GC:
-	case SI_COMPACT:
-		rc = si_compact(index, c, plan, vlsn, vlsn_lru, NULL, 0);
-		break;
-	case SI_COMPACT_INDEX:
-		rc = si_compact_index(index, c, plan, vlsn, vlsn_lru);
-		break;
-	default:
-		unreachable();
-	}
-	/* garbage collect buffers */
-	sd_cgc(c, index->conf.buf_gc_wm);
-	return rc;
-}
 
 static inline int
 si_branchcreate(struct vinyl_index *index, struct sdc *c,
@@ -7200,10 +7114,10 @@ e0:
 }
 
 static int
-si_branch(struct vinyl_index *index, struct sdc *c, struct siplan *plan, uint64_t vlsn)
+si_branch(struct vinyl_index *index, struct sdc *c, struct sinode *n,
+	  uint64_t vlsn)
 {
 	struct runtime *r = index->r;
-	struct sinode *n = plan->node;
 	assert(n->flags & SI_LOCK);
 
 	si_lock(index);
@@ -7259,14 +7173,13 @@ si_branch(struct vinyl_index *index, struct sdc *c, struct siplan *plan, uint64_
 }
 
 static int
-si_compact(struct vinyl_index *index, struct sdc *c, struct siplan *plan,
+si_compact(struct vinyl_index *index, struct sdc *c, struct sinode *node,
 	   uint64_t vlsn,
 	   uint64_t vlsn_lru,
 	   struct ssiter *vindex,
 	   uint64_t vindex_used)
 {
 	struct runtime *r = index->r;
-	struct sinode *node = plan->node;
 	assert(node->flags & SI_LOCK);
 
 	/* prepare for compaction */
@@ -7330,12 +7243,10 @@ si_compact(struct vinyl_index *index, struct sdc *c, struct siplan *plan,
 }
 
 static int
-si_compact_index(struct vinyl_index *index, struct sdc *c, struct siplan *plan,
+si_compact_index(struct vinyl_index *index, struct sdc *c, struct sinode *node,
 		 uint64_t vlsn,
 		 uint64_t vlsn_lru)
 {
-	struct sinode *node = plan->node;
-
 	si_lock(index);
 	if (unlikely(node->used == 0)) {
 		si_nodeunlock(node);
@@ -7349,7 +7260,7 @@ si_compact_index(struct vinyl_index *index, struct sdc *c, struct siplan *plan,
 	uint64_t size_stream = sv_indexused(vindex);
 	struct ssiter i;
 	sv_indexiter_open(&i, vindex, VINYL_GE, NULL, 0);
-	return si_compact(index, c, plan, vlsn, vlsn_lru, &i, size_stream);
+	return si_compact(index, c, node, vlsn, vlsn_lru, &i, size_stream);
 }
 
 static int si_droprepository(char *repo, int drop_directory)
@@ -8061,17 +7972,6 @@ static int si_nodegc(struct sinode *n, struct siconf *scheme)
 	return rc;
 }
 
-static int si_planinit(struct siplan *p)
-{
-	p->plan    = SI_NONE;
-	p->explain = SI_ENONE;
-	p->a       = 0;
-	p->b       = 0;
-	p->c       = 0;
-	p->node    = NULL;
-	return 0;
-}
-
 static int si_plannerinit(struct siplanner *p, void *i)
 {
 	int rc = ss_rqinit(&p->compact, 1, 20);
@@ -8124,7 +8024,8 @@ static int si_plannerremove(struct siplanner *p, int mask, struct sinode *n)
 }
 
 static inline int
-si_plannerpeek_checkpoint(struct siplanner *p, struct siplan *plan)
+si_plannerpeek_checkpoint(struct siplanner *p, uint64_t lsnmin,
+			  struct sinode **pnode)
 {
 	/* try to peek a node which has min
 	 * lsn <= required value
@@ -8134,7 +8035,7 @@ si_plannerpeek_checkpoint(struct siplanner *p, struct siplan *plan)
 	struct ssrqnode *pn = NULL;
 	while ((pn = ss_rqprev(&p->branch, pn))) {
 		n = container_of(pn, struct sinode, nodebranch);
-		if (n->i0.lsnmin <= plan->a) {
+		if (n->i0.lsnmin <= lsnmin) {
 			if (n->flags & SI_LOCK) {
 				rc_inprogress = 2;
 				continue;
@@ -8142,18 +8043,17 @@ si_plannerpeek_checkpoint(struct siplanner *p, struct siplan *plan)
 			goto match;
 		}
 	}
-	if (rc_inprogress)
-		plan->explain = SI_ERETRY;
+	*pnode = NULL;
 	return rc_inprogress;
 match:
 	si_nodelock(n);
-	plan->explain = SI_ENONE;
-	plan->node = n;
+	*pnode = n;
 	return 1;
 }
 
 static inline int
-si_plannerpeek_branch(struct siplanner *p, struct siplan *plan)
+si_plannerpeek_branch(struct siplanner *p, uint64_t branch_wm,
+		      struct sinode **pnode)
 {
 	/* try to peek a node with a biggest in-memory index */
 	struct sinode *n;
@@ -8162,18 +8062,18 @@ si_plannerpeek_branch(struct siplanner *p, struct siplan *plan)
 		n = container_of(pn, struct sinode, nodebranch);
 		if (n->flags & SI_LOCK)
 			continue;
-		if (n->used >= plan->a)
+		if (n->used >= branch_wm)
 			goto match;
 		return 0;
 	}
 	return 0;
 match:
 	si_nodelock(n);
-	plan->explain = SI_EINDEX_SIZE;
-	plan->node = n;
+	*pnode = n;
 	return 1;
 }
 
+#if 0
 static inline int
 si_plannerpeek_age(struct siplanner *p, struct siplan *plan)
 {
@@ -8198,9 +8098,11 @@ match:
 	plan->node = n;
 	return 1;
 }
+#endif
 
 static inline int
-si_plannerpeek_compact(struct siplanner *p, struct siplan *plan)
+si_plannerpeek_compact(struct siplanner *p, uint64_t compact_wm,
+		       struct sinode **pnode)
 {
 	/* try to peek a node with a biggest number
 	 * of branches */
@@ -8210,18 +8112,18 @@ si_plannerpeek_compact(struct siplanner *p, struct siplan *plan)
 		n = container_of(pn, struct sinode, nodecompact);
 		if (n->flags & SI_LOCK)
 			continue;
-		if (n->branch_count >= plan->a)
+		if (n->branch_count >= compact_wm)
 			goto match;
 		return 0;
 	}
 	return 0;
 match:
 	si_nodelock(n);
-	plan->explain = SI_EBRANCH_COUNT;
-	plan->node = n;
+	*pnode = n;
 	return 1;
 }
 
+#if 0
 static inline int
 si_plannerpeek_compact_temperature(struct siplanner *p, struct siplan *plan)
 {
@@ -8244,9 +8146,11 @@ match:
 	plan->node = n;
 	return 1;
 }
+#endif
 
 static inline int
-si_plannerpeek_gc(struct siplanner *p, struct siplan *plan)
+si_plannerpeek_gc(struct siplanner *p, uint64_t vlsn, uint64_t gc_wm,
+		  struct sinode **pnode)
 {
 	/* try to peek a node with a biggest number
 	 * of branches which is ready for gc */
@@ -8256,10 +8160,10 @@ si_plannerpeek_gc(struct siplanner *p, struct siplan *plan)
 	while ((pn = ss_rqprev(&p->compact, pn))) {
 		n = container_of(pn, struct sinode, nodecompact);
 		struct sdindexheader *h = n->self.index.h;
-		if (likely(h->dupkeys == 0) || (h->dupmin >= plan->a))
+		if (likely(h->dupkeys == 0) || (h->dupmin >= vlsn))
 			continue;
 		uint32_t used = (h->dupkeys * 100) / h->keys;
-		if (used >= plan->b) {
+		if (used >= gc_wm) {
 			if (n->flags & SI_LOCK) {
 				rc_inprogress = 2;
 				continue;
@@ -8267,16 +8171,14 @@ si_plannerpeek_gc(struct siplanner *p, struct siplan *plan)
 			goto match;
 		}
 	}
-	if (rc_inprogress)
-		plan->explain = SI_ERETRY;
 	return rc_inprogress;
 match:
 	si_nodelock(n);
-	plan->explain = SI_ENONE;
-	plan->node = n;
+	*pnode = n;
 	return 1;
 }
 
+#if 0
 static inline int
 si_plannerpeek_lru(struct siplanner *p, struct siplan *plan)
 {
@@ -8302,9 +8204,7 @@ si_plannerpeek_lru(struct siplanner *p, struct siplan *plan)
 			goto match;
 		}
 	}
-	if (rc_inprogress)
-		plan->explain = SI_ERETRY;
-	else
+	if (!rc_inprogress)
 		index->lru_run_lsn = 0;
 	return rc_inprogress;
 match:
@@ -8333,9 +8233,10 @@ si_plannerpeek_shutdown(struct siplanner *p, struct siplan *plan)
 	}
 	return 0;
 }
+#endif
 
 static inline int
-si_plannerpeek_nodegc(struct siplanner *p, struct siplan *plan)
+si_plannerpeek_nodegc(struct siplanner *p, struct sinode **pnode)
 {
 	struct vinyl_index *index = p->i;
 	if (likely(index->gc_count == 0))
@@ -8346,41 +8247,14 @@ si_plannerpeek_nodegc(struct siplanner *p, struct siplan *plan)
 		if (likely(si_noderefof(n) == 0)) {
 			rlist_del(&n->gc);
 			index->gc_count--;
-			plan->explain = SI_ENONE;
-			plan->node = n;
+			*pnode = n;
 			return 1;
 		} else {
 			rc_inprogress = 2;
 		}
 	}
+	*pnode = NULL;
 	return rc_inprogress;
-}
-
-static int si_planner(struct siplanner *p, struct siplan *plan)
-{
-	switch (plan->plan) {
-	case SI_BRANCH:
-	case SI_COMPACT_INDEX:
-		return si_plannerpeek_branch(p, plan);
-	case SI_COMPACT:
-		if (plan->b == 1)
-			return si_plannerpeek_compact_temperature(p, plan);
-		return si_plannerpeek_compact(p, plan);
-	case SI_NODEGC:
-		return si_plannerpeek_nodegc(p, plan);
-	case SI_GC:
-		return si_plannerpeek_gc(p, plan);
-	case SI_CHECKPOINT:
-		return si_plannerpeek_checkpoint(p, plan);
-	case SI_AGE:
-		return si_plannerpeek_age(p, plan);
-	case SI_LRU:
-		return si_plannerpeek_lru(p, plan);
-	case SI_SHUTDOWN:
-	case SI_DROP:
-		return si_plannerpeek_shutdown(p, plan);
-	}
-	return -1;
 }
 
 static int si_profilerbegin(struct siprofiler *p, struct vinyl_index *i)
@@ -9496,671 +9370,14 @@ sr_checkdir(const char *path)
 	return 0;
 }
 
-enum {
-	SC_QBRANCH  = 0,
-	SC_QGC      = 1,
-	SC_QLRU     = 3,
-	SC_QMAX
-};
-
-struct scdb {
-	uint32_t workers[SC_QMAX];
-	struct vinyl_index *index;
-	uint32_t active;
-};
-
-struct sctask {
-	struct siplan plan;
-	struct scdb  *db;
-	struct vinyl_index    *shutdown;
-};
-
-struct scheduler {
-	pthread_mutex_t        lock;
-	uint64_t       checkpoint_lsn_last;
-	uint64_t       checkpoint_lsn;
-	bool           checkpoint;
-	uint32_t       age;
-	uint64_t       age_time;
-	uint64_t       gc_time;
-	uint32_t       gc;
-	uint64_t       lru_time;
-	uint32_t       lru;
-	int            rr;
-	int            count;
-	struct scdb         **i;
-	struct rlist   shutdown;
-	int            shutdown_pending;
-	struct runtime            *r;
-};
-
-static int sc_init(struct scheduler*, struct runtime*);
-static int sc_add(struct scheduler*, struct vinyl_index*);
-static int sc_del(struct scheduler*, struct vinyl_index*, int);
-
-static inline void
-sc_start(struct scheduler *s, int task)
-{
-	int i = 0;
-	while (i < s->count) {
-		s->i[i]->active |= task;
-		i++;
-	}
-}
-
-static inline int
-sc_end(struct scheduler *s, struct scdb *db, int task)
-{
-	db->active &= ~task;
-	int complete = 1;
-	int i = 0;
-	while (i < s->count) {
-		if (s->i[i]->active & task)
-			complete = 0;
-		i++;
-	}
-	return complete;
-}
-
-static inline void
-sc_task_checkpoint(struct scheduler *s)
-{
-	uint64_t lsn = sr_seq(s->r->seq, SR_LSN);
-	s->checkpoint_lsn = lsn;
-	s->checkpoint = true;
-	sc_start(s, SI_CHECKPOINT);
-}
-
-static inline void
-sc_task_checkpoint_done(struct scheduler *s)
-{
-	s->checkpoint = false;
-	s->checkpoint_lsn_last = s->checkpoint_lsn;
-	s->checkpoint_lsn = 0;
-}
-
-static inline void
-sc_task_gc(struct scheduler *s)
-{
-	s->gc = 1;
-	sc_start(s, SI_GC);
-}
-
-static inline void
-sc_task_gc_done(struct scheduler *s, uint64_t now)
-{
-	s->gc = 0;
-	s->gc_time = now;
-}
-
-static inline void
-sc_task_lru(struct scheduler *s)
-{
-	s->lru = 1;
-	sc_start(s, SI_LRU);
-}
-
-static inline void
-sc_task_lru_done(struct scheduler *s, uint64_t now)
-{
-	s->lru = 0;
-	s->lru_time = now;
-}
-
-static inline void
-sc_task_age(struct scheduler *s)
-{
-	s->age = 1;
-	sc_start(s, SI_AGE);
-}
-
-static inline void
-sc_task_age_done(struct scheduler *s, uint64_t now)
-{
-	s->age = 0;
-	s->age_time = now;
-}
-
-static int sc_step(struct vinyl_service*, uint64_t);
-
-static int sc_ctl_checkpoint(struct scheduler*);
-static int sc_ctl_shutdown(struct scheduler*, struct vinyl_index*);
-
-
-static int
-sc_init(struct scheduler *s, struct runtime *r)
-{
-	uint64_t now = clock_monotonic64();
-	tt_pthread_mutex_init(&s->lock, NULL);
-	s->checkpoint_lsn           = 0;
-	s->checkpoint_lsn_last      = 0;
-	s->checkpoint               = false;
-	s->age                      = 0;
-	s->age_time                 = now;
-	s->gc                       = 0;
-	s->gc_time                  = now;
-	s->lru                      = 0;
-	s->lru_time                 = now;
-	s->i                        = NULL;
-	s->count                    = 0;
-	s->rr                       = 0;
-	s->r                        = r;
-	rlist_create(&s->shutdown);
-	s->shutdown_pending = 0;
-	return 0;
-}
-
-static int sc_add(struct scheduler *s, struct vinyl_index *index)
-{
-	struct scdb *db = malloc(sizeof(struct scdb));
-	if (unlikely(db == NULL))
-		return -1;
-	db->index  = index;
-	db->active = 0;
-	memset(db->workers, 0, sizeof(db->workers));
-
-	tt_pthread_mutex_lock(&s->lock);
-	int count = s->count + 1;
-	struct scdb **i = malloc(count * sizeof(struct scdb*));
-	if (unlikely(i == NULL)) {
-		tt_pthread_mutex_unlock(&s->lock);
-		free(db);
-		return -1;
-	}
-	memcpy(i, s->i, s->count * sizeof(struct scdb*));
-	i[s->count] = db;
-	void *iprev = s->i;
-	s->i = i;
-	s->count = count;
-	tt_pthread_mutex_unlock(&s->lock);
-	if (iprev)
-		free(iprev);
-	return 0;
-}
-
-static int sc_del(struct scheduler *s, struct vinyl_index *index, int lock)
-{
-	if (unlikely(s->i == NULL))
-		return 0;
-	if (lock)
-		tt_pthread_mutex_lock(&s->lock);
-	struct scdb *db = NULL;
-	struct scdb **iprev;
-	int count = s->count - 1;
-	if (unlikely(count == 0)) {
-		iprev = s->i;
-		db = s->i[0];
-		s->count = 0;
-		s->i = NULL;
-		goto free;
-	}
-	struct scdb **i = malloc(count * sizeof(struct scdb*));
-	if (unlikely(i == NULL)) {
-		if (lock)
-			tt_pthread_mutex_unlock(&s->lock);
-		return -1;
-	}
-	int j = 0;
-	int k = 0;
-	while (j < s->count) {
-		if (s->i[j]->index == index) {
-			db = s->i[j];
-			j++;
-			continue;
-		}
-		i[k] = s->i[j];
-		k++;
-		j++;
-	}
-	iprev = s->i;
-	s->i = i;
-	s->count = count;
-	if (unlikely(s->rr >= s->count))
-		s->rr = 0;
-free:
-	if (lock)
-		tt_pthread_mutex_unlock(&s->lock);
-	free(iprev);
-	free(db);
-	return 0;
-}
-
-static struct scheduler *
-vinyl_env_get_scheduler(struct vinyl_env *);
-
-static int sc_ctl_checkpoint(struct scheduler *s)
-{
-	tt_pthread_mutex_lock(&s->lock);
-	sc_task_checkpoint(s);
-	tt_pthread_mutex_unlock(&s->lock);
-	return 0;
-}
-
-static int sc_ctl_shutdown(struct scheduler *s, struct vinyl_index *i)
-{
-	/* Add a special 'shutdown' task to the scheduler */
-	assert(i != NULL && i->refs == 0);
-	tt_pthread_mutex_lock(&s->lock);
-	s->shutdown_pending++;
-	rlist_add(&s->shutdown, &i->link);
-	tt_pthread_mutex_unlock(&s->lock);
-	return 0;
-}
-
-static inline int
-sc_execute(struct sctask *t, struct sdc *c, uint64_t vlsn)
-{
-	if (unlikely(t->shutdown)) {
-		/* handle special 'shutdown' task (index drop or shutdown) */
-		struct vinyl_index *index = t->shutdown;
-		assert(index != NULL && index->refs == 0);
-		int rc = 0;
-		switch (t->plan.plan) {
-		case SI_SHUTDOWN:
-			rc = vinyl_index_delete(index);
-			break;
-		case SI_DROP:
-			rc = si_drop(index);
-			break;
-		default:
-			unreachable();
-		}
-		return rc;
-	}
-
-	/* regular task */
-	struct vinyl_index *index = t->db->index;
-	assert(index != NULL && index->refs > 0);
-	uint64_t vlsn_lru = si_lru_vlsn(index);
-	return si_execute(index, c, &t->plan, vlsn, vlsn_lru);
-}
-
-static inline struct scdb*
-sc_peek(struct scheduler *s)
-{
-	if (s->rr >= s->count)
-		s->rr = 0;
-	int start = s->rr;
-	int limit = s->count;
-	int i = start;
-first_half:
-	while (i < limit) {
-		struct scdb *db = s->i[i];
-		if (unlikely(db->index == NULL || !si_active(db->index))) {
-			i++;
-			continue;
-		}
-		s->rr = i;
-		return db;
-	}
-	if (i > start) {
-		i = 0;
-		limit = start;
-		goto first_half;
-	}
-	s->rr = 0;
-	return NULL;
-}
-
-static inline void
-sc_next(struct scheduler *s)
-{
-	s->rr++;
-	if (s->rr >= s->count)
-		s->rr = 0;
-}
-
-static inline int
-sc_plan(struct scheduler *s, struct siplan *plan)
-{
-	struct scdb *db = s->i[s->rr];
-	return si_plan(db->index, plan);
-}
-
-static inline int
-sc_planquota(struct scheduler *s, struct siplan *plan, uint32_t quota, uint32_t quota_limit)
-{
-	struct scdb *db = s->i[s->rr];
-	if (db->workers[quota] >= quota_limit)
-		return 2;
-	return si_plan(db->index, plan);
-}
-
-static inline int
-sc_do_shutdown(struct scheduler *s, struct sctask *task)
-{
-	if (likely(s->shutdown_pending == 0))
-		return 0;
-	struct vinyl_index *index, *n;
-	rlist_foreach_entry_safe(index, &s->shutdown, link, n) {
-		task->plan.plan = SI_SHUTDOWN;
-		int rc;
-		rc = si_plan(index, &task->plan);
-		if (rc == 1) {
-			s->shutdown_pending--;
-			/* delete from scheduler->shutdown list */
-			rlist_del(&index->link);
-			sc_del(s, index, 0);
-			task->shutdown = index;
-			task->db = NULL;
-			return 1;
-		}
-	}
-	return 0;
-}
-
-static int
-sc_do(struct scheduler *s, struct sctask *task, struct srzone *zone,
-      struct scdb *db, uint64_t vlsn, uint64_t now)
-{
-	int rc;
-
-	/* node gc */
-	task->plan.plan = SI_NODEGC;
-	rc = sc_plan(s, &task->plan);
-	if (rc == 1) {
-		vinyl_index_ref(db->index);
-		assert(db->index != NULL && db->index->refs > 0);
-		task->db = db;
-		return 1;
-	}
-
-	/* checkpoint */
-	if (s->checkpoint) {
-		task->plan.plan = SI_CHECKPOINT;
-		task->plan.a = s->checkpoint_lsn;
-		rc = sc_plan(s, &task->plan);
-		switch (rc) {
-		case 1:
-			db->workers[SC_QBRANCH]++;
-			assert(db->index != NULL && db->index->refs > 0);
-			vinyl_index_ref(db->index);
-			task->db = db;
-			return 1;
-		case 0: /* complete */
-			if (sc_end(s, db, SI_CHECKPOINT))
-				sc_task_checkpoint_done(s);
-			break;
-		}
-	}
-
-	/* garbage-collection */
-	if (s->gc) {
-		task->plan.plan = SI_GC;
-		task->plan.a = vlsn;
-		task->plan.b = zone->gc_wm;
-		rc = sc_planquota(s, &task->plan, SC_QGC, zone->gc_prio);
-		switch (rc) {
-		case 1:
-			if (zone->mode == 0)
-				task->plan.plan = SI_COMPACT_INDEX;
-			assert(db->index != NULL && db->index->refs > 0);
-			vinyl_index_ref(db->index);
-			db->workers[SC_QGC]++;
-			task->db = db;
-			return 1;
-		case 0: /* complete */
-			if (sc_end(s, db, SI_GC))
-				sc_task_gc_done(s, now);
-			break;
-		}
-	}
-
-	/* lru */
-	if (s->lru) {
-		task->plan.plan = SI_LRU;
-		rc = sc_planquota(s, &task->plan, SC_QLRU, zone->lru_prio);
-		switch (rc) {
-		case 1:
-			if (zone->mode == 0)
-				task->plan.plan = SI_COMPACT_INDEX;
-			assert(db->index != NULL && db->index->refs > 0);
-			vinyl_index_ref(db->index);
-			db->workers[SC_QLRU]++;
-			task->db = db;
-			return 1;
-		case 0: /* complete */
-			if (sc_end(s, db, SI_LRU))
-				sc_task_lru_done(s, now);
-			break;
-		}
-	}
-
-	/* index aging */
-	if (s->age) {
-		task->plan.plan = SI_AGE;
-		task->plan.a = zone->branch_age * 1000000; /* ms */
-		task->plan.b = zone->branch_age_wm;
-		rc = sc_planquota(s, &task->plan, SC_QBRANCH, zone->branch_prio);
-		switch (rc) {
-		case 1:
-			if (zone->mode == 0)
-				task->plan.plan = SI_COMPACT_INDEX;
-			assert(db->index != NULL && db->index->refs > 0);
-			vinyl_index_ref(db->index);
-			db->workers[SC_QBRANCH]++;
-			task->db = db;
-			return 1;
-		case 0: /* complete */
-			if (sc_end(s, db, SI_AGE))
-				sc_task_age_done(s, now);
-			break;
-		}
-	}
-
-	/* compact_index (compaction with in-memory index) */
-	if (zone->mode == 0) {
-		task->plan.plan = SI_COMPACT_INDEX;
-		task->plan.a = zone->branch_wm;
-		rc = sc_plan(s, &task->plan);
-		if (rc == 1) {
-			assert(db->index != NULL && db->index->refs > 0);
-			vinyl_index_ref(db->index);
-			task->db = db;
-			return 1;
-		}
-		goto no_job;
-	}
-
-	/* branching */
-	task->plan.plan = SI_BRANCH;
-	task->plan.a = zone->branch_wm;
-	rc = sc_planquota(s, &task->plan, SC_QBRANCH, zone->branch_prio);
-	if (rc == 1) {
-		db->workers[SC_QBRANCH]++;
-		assert(db->index != NULL && db->index->refs > 0);
-		vinyl_index_ref(db->index);
-		task->db = db;
-		return 1;
-	}
-
-	/* compaction */
-	task->plan.plan = SI_COMPACT;
-	task->plan.a = zone->compact_wm;
-	task->plan.b = zone->compact_mode;
-	rc = sc_plan(s, &task->plan);
-	if (rc == 1) {
-		assert(db->index != NULL && db->index->refs > 0);
-		vinyl_index_ref(db->index);
-		task->db = db;
-		return 1;
-	}
-
-no_job:
-	si_planinit(&task->plan);
-	return 0;
-}
-
-static inline void
-sc_periodic_done(struct scheduler *s, uint64_t now)
-{
-	/* checkpoint */
-	if (unlikely(s->checkpoint))
-		sc_task_checkpoint_done(s);
-	/* gc */
-	if (unlikely(s->gc))
-		sc_task_gc_done(s, now);
-	/* lru */
-	if (unlikely(s->lru))
-		sc_task_lru_done(s, now);
-	/* age */
-	if (unlikely(s->age))
-		sc_task_age_done(s, now);
-}
-
-static inline void
-sc_periodic(struct scheduler *s, struct srzone *zone, uint64_t now)
-{
-	if (unlikely(s->count == 0))
-		return;
-	/* checkpoint */
-	switch (zone->mode) {
-	case 0:  /* compact_index */
-		break;
-	case 1:  /* compact_index + branch_count prio */
-		unreachable();
-		break;
-	case 2:  /* checkpoint */
-	{
-		if (!s->checkpoint)
-			sc_task_checkpoint(s);
-		break;
-	}
-	default: /* branch + compact */
-		assert(zone->mode == 3);
-	}
-	/* gc */
-	if (s->gc == 0 && zone->gc_prio && zone->gc_period) {
-		if ((now - s->gc_time) >= zone->gc_period_us)
-			sc_task_gc(s);
-	}
-	/* lru */
-	if (s->lru == 0 && zone->lru_prio && zone->lru_period) {
-		if ((now - s->lru_time) >= zone->lru_period_us)
-			sc_task_lru(s);
-	}
-	/* aging */
-	if (s->age == 0 && zone->branch_prio && zone->branch_age_period) {
-		if ((now - s->age_time) >= zone->branch_age_period_us)
-			sc_task_age(s);
-	}
-}
-
-static int
-sc_schedule(struct sctask *task, struct vinyl_service *srv, uint64_t vlsn)
-{
-	uint64_t now = clock_monotonic64();
-	struct scheduler *sc = vinyl_env_get_scheduler(srv->env);
-	struct srzone *zone = sr_zoneof(sc->r);
-	int rc;
-	tt_pthread_mutex_lock(&sc->lock);
-	/* start periodic tasks */
-	sc_periodic(sc, zone, now);
-	/* index shutdown-drop */
-	rc = sc_do_shutdown(sc, task);
-	if (rc) {
-		tt_pthread_mutex_unlock(&sc->lock);
-		return rc;
-	}
-	/* peek an index */
-	struct scdb *db = sc_peek(sc);
-	if (unlikely(db == NULL)) {
-		/* complete on-going periodic tasks when there
-		 * are no active index maintenance tasks left */
-		sc_periodic_done(sc, now);
-		tt_pthread_mutex_unlock(&sc->lock);
-		return 0;
-	}
-	assert(db != NULL);
-	rc = sc_do(sc, task, zone, db, vlsn, now);
-	/* schedule next index */
-	sc_next(sc);
-	tt_pthread_mutex_unlock(&sc->lock);
-	return rc;
-}
-
-static inline int
-sc_complete(struct scheduler *s, struct sctask *t)
-{
-	tt_pthread_mutex_lock(&s->lock);
-	struct scdb *db = t->db;
-	switch (t->plan.plan) {
-	case SI_BRANCH:
-	case SI_AGE:
-	case SI_CHECKPOINT:
-		db->workers[SC_QBRANCH]--;
-		break;
-	case SI_COMPACT_INDEX:
-		break;
-	case SI_GC:
-		db->workers[SC_QGC]--;
-		break;
-	case SI_LRU:
-		db->workers[SC_QLRU]--;
-		break;
-	case SI_SHUTDOWN:
-	case SI_DROP:
-		break;
-	case SI_COMPACT:
-		break;
-	default:
-		unreachable();
-	}
-	if (db && db->index != NULL) {
-		if (!(vinyl_index_unref(db->index)))
-			db->index = NULL;
-	}
-	tt_pthread_mutex_unlock(&s->lock);
-	return 0;
-}
-
-static inline void
-sc_taskinit(struct sctask *task)
-{
-	si_planinit(&task->plan);
-	task->db = NULL;
-	task->shutdown = NULL;
-}
-
-static int
-sc_step(struct vinyl_service *srv, uint64_t vlsn)
-{
-	struct scheduler *sc = vinyl_env_get_scheduler(srv->env);
-	struct sctask task;
-	sc_taskinit(&task);
-	int rc = sc_schedule(&task, srv, vlsn);
-	if (task.plan.plan == 0) {
-		/*
-		 * TODO: no-op task.
-		 * Execute some useless instructions, utilize CPU
-		 * and spent our money. Absolute senseless.
-		 * See no_job case from sc_do().
-		 */
-		return 0; /* no_job case */
-	}
-	int rc_job = rc;
-	if (rc_job > 0) {
-		rc = sc_execute(&task, &srv->sdc, vlsn);
-		if (unlikely(rc == -1)) {
-			if (task.db != NULL) {
-				sr_statusset(&task.db->index->status,
-					     SR_MALFUNCTION);
-			}
-			return -1;
-		}
-	}
-	sc_complete(sc, &task);
-	return rc_job;
-}
-
-static int sc_write(struct scheduler *s, struct svlog *log, uint64_t lsn,
+static int sc_write(struct runtime *r, struct svlog *log, uint64_t lsn,
 		    enum vinyl_status status)
 {
 	/* write-ahead log */
-	sr_seqlock(s->r->seq);
-	if (lsn > s->r->seq->lsn)
-		s->r->seq->lsn = lsn;
-	sr_sequnlock(s->r->seq);
+	sr_seqlock(r->seq);
+	if (lsn > r->seq->lsn)
+		r->seq->lsn = lsn;
+	sr_sequnlock(r->seq);
 	sl_write(log, lsn);
 
 	/* index */
@@ -10225,24 +9442,18 @@ struct vinyl_confcursor {
 
 struct vinyl_env {
 	enum vinyl_status status;
-	/** List of open spaces. */
+	pthread_mutex_t indexes_lock;
 	struct rlist indexes;
 	struct srseq       seq;
 	struct seconf      conf;
 	struct ssquota     quota;
 	struct sicachepool cachepool;
 	struct sxmanager   xm;
-	struct scheduler          scheduler;
 	struct srstat      stat;
 	struct runtime          r;
 	struct mempool read_pool;
+	volatile int64_t checkpoint_lsn; /* atomic */
 };
-
-struct scheduler *
-vinyl_env_get_scheduler(struct vinyl_env *env)
-{
-	return &env->scheduler;
-}
 
 void
 vinyl_raise()
@@ -10316,6 +9527,7 @@ vinyl_env_delete(struct vinyl_env *e)
 {
 	int rcret = 0;
 	e->status = SR_SHUTDOWN;
+#if 0
 	/* TODO: tarantool doesn't delete indexes during shutdown */
 	//assert(rlist_empty(&e->db));
 	int rc;
@@ -10325,6 +9537,8 @@ vinyl_env_delete(struct vinyl_env *e)
 		if (unlikely(rc == -1))
 			rcret = -1;
 	}
+#endif
+	tt_pthread_mutex_destroy(&e->indexes_lock);
 	sx_managerfree(&e->xm);
 	si_cachepool_free(&e->cachepool);
 	se_conffree(&e->conf);
@@ -10394,27 +9608,18 @@ se_confcompaction(struct vinyl_env *e, struct srconf **pc)
 int
 vinyl_checkpoint(struct vinyl_env *env)
 {
-	return sc_ctl_checkpoint(&env->scheduler);
+	/* TODO: checkpoint LSN is incorrect */
+	uint64_t checkpoint_lsn = sr_seq(env->r.seq, SR_LSN);
+	pm_atomic_store_explicit(&env->checkpoint_lsn, checkpoint_lsn,
+				 pm_memory_order_relaxed);
+	return 0;
 }
 
 bool
 vinyl_checkpoint_is_active(struct vinyl_env *env)
 {
-	tt_pthread_mutex_lock(&env->scheduler.lock);
-	bool is_active = env->scheduler.checkpoint;
-	tt_pthread_mutex_unlock(&env->scheduler.lock);
-	return is_active;
-}
-
-static inline struct srconf*
-se_confscheduler(struct seconfrt *rt, struct srconf **pc)
-{
-	struct srconf *scheduler = *pc;
-	struct srconf *p = NULL;
-	sr_C(&p, pc, "zone", SS_STRING, rt->zone);
-	sr_C(&p, pc, "gc_active", SS_U32, &rt->gc_active);
-	sr_C(&p, pc, "lru_active", SS_U32, &rt->lru_active);
-	return sr_C(NULL, pc, "scheduler", SS_UNDEF, scheduler);
+	return pm_atomic_load_explicit(&env->checkpoint_lsn,
+				       pm_memory_order_relaxed) != 0;
 }
 
 static inline struct srconf*
@@ -10469,6 +9674,7 @@ se_confdb(struct vinyl_env *e, struct srconf **pc)
 	struct srconf *prev = NULL;
 	struct srconf *p;
 	struct vinyl_index *o;
+	/* TODO: dirty read */
 	rlist_foreach_entry(o, &e->indexes, link)
 	{
 		si_profilerbegin(&o->rtp, o);
@@ -10509,15 +9715,13 @@ se_confprepare(struct vinyl_env *e, struct seconfrt *rt, struct srconf *c)
 	struct srconf *vinyl     = se_confvinyl(e, rt, &pc);
 	struct srconf *memory     = se_confmemory(e, rt, &pc);
 	struct srconf *compaction = se_confcompaction(e, &pc);
-	struct srconf *scheduler  = se_confscheduler(rt, &pc);
 	struct srconf *perf       = se_confperformance(rt, &pc);
 	struct srconf *metric     = se_confmetric(rt, &pc);
 	struct srconf *db         = se_confdb(e, &pc);
 
 	vinyl->next     = memory;
 	memory->next     = compaction;
-	compaction->next = scheduler;
-	scheduler->next  = perf;
+	compaction->next = perf;
 	perf->next       = metric;
 	metric->next     = db;
 	return vinyl;
@@ -10542,15 +9746,6 @@ se_confrt(struct vinyl_env *e, struct seconfrt *rt)
 
 	/* memory */
 	rt->memory_used = ss_quotaused(&e->quota);
-
-	/* scheduler */
-	tt_pthread_mutex_lock(&e->scheduler.lock);
-	rt->checkpoint           = e->scheduler.checkpoint;
-	rt->checkpoint_lsn_last  = e->scheduler.checkpoint_lsn_last;
-	rt->checkpoint_lsn       = e->scheduler.checkpoint_lsn;
-	rt->gc_active            = e->scheduler.gc;
-	rt->lru_active           = e->scheduler.lru;
-	tt_pthread_mutex_unlock(&e->scheduler.lock);
 
 	int v = ss_quotaused_percent(&e->quota);
 	struct srzone *z = sr_zonemap(&e->conf.zones, v);
@@ -10883,7 +10078,7 @@ error:
 int
 vinyl_index_open(struct vinyl_index *index)
 {
-	struct vinyl_env *e = index->env;
+	//struct vinyl_env *e = index->env;
 	int status = sr_status(&index->status);
 	if (status == SR_FINAL_RECOVERY ||
 	    status == SR_DROP_PENDING)
@@ -10897,9 +10092,7 @@ vinyl_index_open(struct vinyl_index *index)
 
 online:
 	vinyl_index_recoverend(index);
-	rc = sc_add(&e->scheduler, index);
-	if (unlikely(rc == -1))
-		return -1;
+	/* TODO: register index in scheduler */
 	return 0;
 }
 
@@ -10908,6 +10101,7 @@ vinyl_index_ref(struct vinyl_index *index)
 {
 	tt_pthread_mutex_lock(&index->ref_lock);
 	index->refs++;
+	say_warn("%p: index ref %d", index, index->refs);
 	tt_pthread_mutex_unlock(&index->ref_lock);
 }
 
@@ -10921,6 +10115,7 @@ vinyl_index_unref(struct vinyl_index *index)
 	/* reduce reference counter */
 	tt_pthread_mutex_lock(&index->ref_lock);
 	int ref = --index->refs;
+	say_warn("%p: index unref %d", index, index->refs);
 	tt_pthread_mutex_unlock(&index->ref_lock);
 	assert(ref >= 0);
 	if (ref > 0)
@@ -10941,11 +10136,10 @@ vinyl_index_unref(struct vinyl_index *index)
 	default:
 		return ref;
 	}
-	rlist_del(&index->link);
 
 	/* schedule index shutdown or drop */
 	sr_statusset(&index->status, status);
-	sc_ctl_shutdown(&e->scheduler, index);
+	/* TODO: unregister index from scheduler */
 	return ref;
 }
 
@@ -11037,7 +10231,7 @@ vinyl_index_read(struct vinyl_index *index, struct vinyl_tuple *key, enum vinyl_
 	if (x) {
 		vlsn = x->vlsn;
 	} else {
-		vlsn = sr_seq(e->scheduler.r->seq, SR_LSN);
+		vlsn = sr_seq(e->r.seq, SR_LSN);
 	}
 
 	int upsert_eq = 0;
@@ -11147,7 +10341,10 @@ vinyl_index_new(struct vinyl_env *e, struct key_def *key_def)
 	sx_indexinit(&index->coindex, &e->xm, index, index->key_def);
 	index->txn_min = sx_min(&e->xm);
 	index->txn_max = UINT32_MAX;
+	say_warn("%p: index new", index);
+	tt_pthread_mutex_lock(&e->indexes_lock);
 	rlist_add(&e->indexes, &index->link);
+	tt_pthread_mutex_unlock(&e->indexes_lock);
 	return index;
 
 error_3:
@@ -11192,11 +10389,15 @@ vinyl_index_delete(struct vinyl_index *index)
 struct vinyl_index *
 vinyl_index_by_name(struct vinyl_env *e, const char *name)
 {
-	struct vinyl_index *index;
+	struct vinyl_index *index = NULL;
+	tt_pthread_mutex_lock(&e->indexes_lock);
 	rlist_foreach_entry(index, &e->indexes, link) {
-		if (strcmp(index->conf.name, name) == 0)
+		if (strcmp(index->conf.name, name) == 0) {
+			tt_pthread_mutex_unlock(&e->indexes_lock);
 			return index;
+		}
 	}
+	tt_pthread_mutex_unlock(&e->indexes_lock);
 	return NULL;
 }
 
@@ -11769,7 +10970,7 @@ vinyl_commit(struct vinyl_tx *t, int64_t lsn)
 	assert(t->t.state == SXCOMMIT);
 
 	/* do wal write and backend commit */
-	int rc = sc_write(&e->scheduler, &t->log, lsn, e->status);
+	int rc = sc_write(&e->r, &t->log, lsn, e->status);
 	if (unlikely(rc == -1))
 		sx_rollback(&t->t);
 
@@ -11907,11 +11108,15 @@ vinyl_env_new(void)
 	if (unlikely(e == NULL))
 		return NULL;
 	memset(e, 0, sizeof(*e));
-	rlist_create(&e->indexes);
 	e->status = SR_OFFLINE;
 
 	if (se_confinit(&e->conf, e))
 		goto error;
+
+	/* initialize the list of spaces */
+	rlist_create(&e->indexes);
+	tt_pthread_mutex_init(&e->indexes_lock, NULL);
+
 	/* set memory quota (disable during recovery) */
 	ss_quotainit(&e->quota, e->conf.memory_limit);
 	sr_seqinit(&e->seq);
@@ -11920,7 +11125,6 @@ vinyl_env_new(void)
 		&e->conf.zones, &e->seq, &e->stat);
 	sx_managerinit(&e->xm, &e->r);
 	si_cachepool_init(&e->cachepool, &e->r);
-	sc_init(&e->scheduler, &e->r);
 
 	/*
 	 * Initialize limits
@@ -11967,12 +11171,202 @@ vinyl_service_new(struct vinyl_env *env)
 }
 
 int
+vinyl_service_checkpoint(struct sdc *sdc, struct vinyl_index *index)
+{
+	struct vinyl_env *e = index->env;
+	uint64_t checkpoint_lsn = pm_atomic_load_explicit(&e->checkpoint_lsn,
+		pm_memory_order_relaxed);
+	if (checkpoint_lsn == 0)
+		return 0; /* idle */
+
+	/* Get the next node to dump */
+	struct sinode *node;
+	int rc = si_plannerpeek_checkpoint(&index->p, checkpoint_lsn,
+					   &node);
+	switch (rc) {
+	case 1:
+		/* one more node */
+		assert(rc == 1);
+		int64_t vlsn = sx_vlsn(&e->xm);
+		say_warn("SNAPSHOT");
+		rc = si_branch(index, sdc, node, vlsn);
+		return rc;
+	case 2:
+		/* some nodes are still in progress by another worker */
+		return 0; /* idle */
+	case 0:
+		/* no more nodes, set checkpoint_lsn to 0 */
+		pm_atomic_compare_exchange_strong_explicit(
+				&e->checkpoint_lsn, &checkpoint_lsn,
+				0, pm_memory_order_relaxed,
+				pm_memory_order_relaxed);
+		return 1; /* idle */
+	default:
+		unreachable();
+	}
+}
+
+int
+vinyl_service_nodegc(struct vinyl_index *index)
+{
+	struct sinode *node;
+	int rc = si_plannerpeek_nodegc(&index->p, &node);
+	if (rc != 1)
+		return rc;
+
+	say_warn("NODEGC");
+	return si_nodefree(node, &index->env->r, 1);
+}
+
+int
+vinyl_service_gc(struct sdc *sdc, struct vinyl_index *index)
+{
+	struct vinyl_env *e = index->env;
+	struct srzone *zone = sr_zoneof(&e->r);
+	uint64_t vlsn = sx_vlsn(&e->xm);
+	uint64_t vlsn_lru = si_lru_vlsn(index);
+	struct sinode *node;
+	int rc = si_plannerpeek_gc(&index->p, vlsn, zone->gc_wm, &node);
+	if (rc != 1)
+		return rc;
+
+	say_warn("GC");
+	return si_compact(index, sdc, node, vlsn, vlsn_lru, NULL, 0);
+}
+
+int
+vinyl_service_branch(struct sdc *sdc, struct vinyl_index *index)
+{
+	struct vinyl_env *e = index->env;
+	struct srzone *zone = sr_zoneof(&e->r);
+	struct sinode *node;
+	int rc = si_plannerpeek_branch(&index->p, zone->branch_wm, &node);
+	if (rc != 1)
+		return rc;
+
+	uint64_t vlsn = sx_vlsn(&e->xm);
+	return si_branch(index, sdc, node, vlsn);
+}
+
+int
+vinyl_service_compact_index(struct sdc *sdc, struct vinyl_index *index)
+{
+	struct vinyl_env *e = index->env;
+	struct srzone *zone = sr_zoneof(&e->r);
+	if (zone->mode != 0)
+		return 0;
+	struct sinode *node;
+	int rc = si_plannerpeek_branch(&index->p, zone->branch_wm, &node);
+	if (rc != 1)
+		return rc;
+
+	say_warn("COMPACT_INDEX");
+	uint64_t vlsn = sx_vlsn(&e->xm);
+	uint64_t vlsn_lru = si_lru_vlsn(index);
+	return si_compact_index(index, sdc, node, vlsn, vlsn_lru);
+}
+
+int
+vinyl_service_compact(struct sdc *sdc, struct vinyl_index *index)
+{
+	struct vinyl_env *e = index->env;
+	struct srzone *zone = sr_zoneof(&e->r);
+	uint64_t vlsn = sx_vlsn(&e->xm);
+	struct sinode *node;
+	int rc = si_plannerpeek_gc(&index->p, vlsn, zone->compact_wm, &node);
+	if (rc != 1)
+		return rc;
+
+	uint64_t vlsn_lru = si_lru_vlsn(index);
+	return si_compact(index, sdc, node, vlsn, vlsn_lru, NULL, 0);
+}
+
+int
+vinyl_service_do_index(struct sdc *sdc, struct vinyl_index *index)
+{
+	int count = 0;
+	int rc;
+
+	/* node gc */
+	rc = vinyl_service_nodegc(index);
+	if (rc < 0) {
+		return -1;
+	} else if (rc) {
+		count++;
+	}
+
+	/* checkpoint */
+	rc = vinyl_service_checkpoint(sdc, index);
+	if (rc < 0) {
+		return -1;
+	} else if (rc) {
+		count++;
+	}
+
+	/* gc */
+	rc = vinyl_service_gc(sdc, index);
+	if (rc < 0) {
+		return -1;
+	} else if (rc) {
+		count++;
+	}
+
+	/* compact_index (compaction with in-memory index) */
+	rc = vinyl_service_compact_index(sdc, index);
+	if (rc < 0) {
+		return -1;
+	} else if (rc) {
+		count++;
+	}
+
+	/* branch */
+	rc = vinyl_service_branch(sdc, index);
+	if (rc < 0) {
+		return -1;
+	} else if (rc) {
+		count++;
+	}
+
+	/* compact */
+	rc = vinyl_service_compact(sdc, index);
+	if (rc < 0) {
+		return -1;
+	} else if (rc) {
+		count++;
+	}
+
+	if (count > 0) {
+		 say_warn("%u:%u: processed %d tasks",
+		          index->key_def->space_id, index->key_def->iid,
+			  count);
+	}
+	return count;
+}
+
+int
 vinyl_service_do(struct vinyl_service *srv)
 {
-	if (! sr_statusactive_is(srv->env->status))
-		return 0;
+	struct vinyl_env *e = srv->env;
+	if (! sr_statusactive_is(e->status))
+		return 0; /* shutdown */
 
-	return sc_step(srv, sx_vlsn(&srv->env->xm));
+	struct vinyl_index *index;
+	tt_pthread_mutex_lock(&e->indexes_lock);
+	index = rlist_first_entry(&e->indexes, struct vinyl_index, link);
+	tt_pthread_mutex_unlock(&e->indexes_lock);
+	while (sr_statusactive_is(e->status) && &index->link != &e->indexes) {
+		int rc = vinyl_service_do_index(&srv->sdc, index);
+		/* garbage collect buffers */
+		sd_cgc(&srv->sdc, index->conf.buf_gc_wm);
+		if (rc != 0)
+			return rc; /* error or finished */
+		tt_pthread_mutex_lock(&e->indexes_lock);
+		index = rlist_next_entry(index, link);
+		tt_pthread_mutex_unlock(&e->indexes_lock);
+	}
+
+	(void) si_drop;
+	return 0;
 }
 
 void

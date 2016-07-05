@@ -67,8 +67,10 @@ vinyl_worker(void *arg)
 	while (pm_atomic_load_explicit(&worker_pool_run,
 				       pm_memory_order_relaxed)) {
 		int rc = vinyl_service_do(srv);
-		if (rc == -1)
+		if (rc == -1) {
+			say_warn("OMG, worker has died");
 			break;
+		}
 		if (rc == 0)
 			usleep(10000); /* 10ms */
 	}
@@ -83,12 +85,12 @@ vinyl_workers_start(struct vinyl_env *env)
 		return;
 	/* prepare worker pool */
 	worker_pool = NULL;
-	worker_pool_size = cfg_geti("vinyl.threads");
-	if (worker_pool_size > 0) {
+	worker_pool_size = 1; // cfg_geti("vinyl.threads");
+	//if (worker_pool_size > 0) {
 		worker_pool = (struct cord *)calloc(worker_pool_size, sizeof(struct cord));
 		if (worker_pool == NULL)
 			panic("failed to allocate vinyl worker pool");
-	}
+	//}
 	worker_pool_run = 1;
 	for (int i = 0; i < worker_pool_size; i++)
 		cord_start(&worker_pool[i], "vinyl", vinyl_worker, env);
