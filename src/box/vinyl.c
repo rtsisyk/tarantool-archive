@@ -5903,7 +5903,6 @@ struct vy_index_conf {
 	uint32_t    compression;
 	char       *compression_sz;
 	struct vy_filterif *compression_if;
-	uint32_t    temperature;
 	uint64_t    lru;
 	uint32_t    lru_step;
 	uint32_t    buf_gc_wm;
@@ -5978,8 +5977,6 @@ struct PACKED vy_range {
 	struct vy_run   self;
 	struct vy_run  *branch;
 	uint32_t   branch_count;
-	uint32_t   temperature;
-	uint64_t   temperature_reads;
 	uint16_t   refs;
 	pthread_mutex_t reflock;
 	struct svindex    i0, i1;
@@ -5987,7 +5984,6 @@ struct PACKED vy_range {
 	rb_node(struct vy_range) tree_node;
 	struct ssrqnode   nodecompact;
 	struct ssrqnode   nodebranch;
-	struct ssrqnode   nodetemp;
 	struct rlist     gc;
 	struct rlist     commit;
 };
@@ -6154,7 +6150,6 @@ vy_range_view_close(struct vy_rangeview *v)
 struct vy_planner {
 	struct ssrq branch;
 	struct ssrq compact;
-	struct ssrq temp;
 	void *i;
 };
 
@@ -6165,7 +6160,6 @@ struct vy_planner {
 #define SI_COMPACT_INDEX 8
 #define SI_CHECKPOINT    16
 #define SI_GC            32
-#define SI_TEMP          64
 #define SI_SHUTDOWN      512
 #define SI_DROP          1024
 #define SI_LRU           8192
@@ -6198,7 +6192,6 @@ struct vy_plan {
 	 *   a: lsn
 	 *   b: percent
 	 * lru:
-	 * temperature:
 	 * snapshot:
 	 *   a: ssn
 	 * shutdown:
@@ -6251,9 +6244,6 @@ struct vy_profiler {
 	uint32_t  total_branch_max;
 	uint32_t  total_page_count;
 	uint64_t  total_snapshot_size;
-	uint32_t  temperature_avg;
-	uint32_t  temperature_min;
-	uint32_t  temperature_max;
 	uint64_t  memory_used;
 	uint64_t  count;
 	uint64_t  count_dup;
@@ -6263,8 +6253,6 @@ struct vy_profiler {
 	int       histogram_branch_20plus;
 	char      histogram_branch_sz[256];
 	char     *histogram_branch_ptr;
-	char      histogram_temperature_sz[256];
-	char     *histogram_temperature_ptr;
 	struct vinyl_index  *i;
 };
 
@@ -7536,7 +7524,7 @@ si_merge(struct vinyl_index *index, struct sdc *c, struct vy_range *range,
 	/* commit compaction changes */
 	vy_index_lock(index);
 	struct svindex *j = vy_range_index(range);
-	vy_planner_remove(&index->p, SI_COMPACT|SI_BRANCH|SI_TEMP, range);
+	vy_planner_remove(&index->p, SI_COMPACT|SI_BRANCH, range);
 	vy_range_split(range);
 	index->size -= vy_range_size(range);
 	switch (count) {
@@ -7548,13 +7536,11 @@ si_merge(struct vinyl_index *index, struct sdc *c, struct vy_range *range,
 		n = *(struct vy_range**)result->s;
 		n->i0 = *j;
 		n->i0.tree.arg = &n->i0;
-		n->temperature = range->temperature;
-		n->temperature_reads = range->temperature_reads;
 		n->used = j->used;
 		index->size += vy_range_size(n);
 		vy_range_lock(n);
 		si_replace(index, range, n);
-		vy_planner_update(&index->p, SI_COMPACT|SI_BRANCH|SI_TEMP, n);
+		vy_planner_update(&index->p, SI_COMPACT|SI_BRANCH, n);
 		break;
 	default: /* split */
 		rc = si_redistribute(index, c, range, result);
@@ -7566,22 +7552,18 @@ si_merge(struct vinyl_index *index, struct sdc *c, struct vy_range *range,
 		vy_bufiterref_open(&i, result, sizeof(struct vy_range*));
 		n = vy_bufiterref_get(&i);
 		n->used = n->i0.used;
-		n->temperature = range->temperature;
-		n->temperature_reads = range->temperature_reads;
 		index->size += vy_range_size(n);
 		vy_range_lock(n);
 		si_replace(index, range, n);
-		vy_planner_update(&index->p, SI_COMPACT|SI_BRANCH|SI_TEMP, n);
+		vy_planner_update(&index->p, SI_COMPACT|SI_BRANCH, n);
 		for (vy_bufiterref_next(&i); vy_bufiterref_has(&i);
 		     vy_bufiterref_next(&i)) {
 			n = vy_bufiterref_get(&i);
 			n->used = n->i0.used;
-			n->temperature = range->temperature;
-			n->temperature_reads = range->temperature_reads;
 			index->size += vy_range_size(n);
 			vy_range_lock(n);
 			si_insert(index, n);
-			vy_planner_update(&index->p, SI_COMPACT|SI_BRANCH|SI_TEMP, n);
+			vy_planner_update(&index->p, SI_COMPACT|SI_BRANCH, n);
 		}
 		break;
 	}
@@ -7676,8 +7658,6 @@ vy_range_new(struct key_def *key_def)
 	vy_run_init(&n->self);
 	n->branch = NULL;
 	n->branch_count = 0;
-	n->temperature = 0;
-	n->temperature_reads = 0;
 	n->refs = 0;
 	tt_pthread_mutex_init(&n->reflock, NULL);
 	vy_file_init(&n->file);
@@ -7685,7 +7665,6 @@ vy_range_new(struct key_def *key_def)
 	sv_indexinit(&n->i1, key_def);
 	ss_rqinitnode(&n->nodecompact);
 	ss_rqinitnode(&n->nodebranch);
-	ss_rqinitnode(&n->nodetemp);
 	rlist_create(&n->gc);
 	rlist_create(&n->commit);
 	return n;
@@ -7918,12 +7897,6 @@ static int vy_planner_init(struct vy_planner *p, void *i)
 		ss_rqfree(&p->compact);
 		return -1;
 	}
-	rc = ss_rqinit(&p->temp, 1, 100);
-	if (unlikely(rc == -1)) {
-		ss_rqfree(&p->compact);
-		ss_rqfree(&p->branch);
-		return -1;
-	}
 	p->i = i;
 	return 0;
 }
@@ -7932,7 +7905,6 @@ static int vy_planner_free(struct vy_planner *p)
 {
 	ss_rqfree(&p->compact);
 	ss_rqfree(&p->branch);
-	ss_rqfree(&p->temp);
 	return 0;
 }
 
@@ -7942,8 +7914,6 @@ static int vy_planner_update(struct vy_planner *p, int mask, struct vy_range *n)
 		ss_rqupdate(&p->branch, &n->nodebranch, n->used);
 	if (mask & SI_COMPACT)
 		ss_rqupdate(&p->compact, &n->nodecompact, n->branch_count);
-	if (mask & SI_TEMP)
-		ss_rqupdate(&p->temp, &n->nodetemp, n->temperature);
 	return 0;
 }
 
@@ -7953,8 +7923,6 @@ static int vy_planner_remove(struct vy_planner *p, int mask, struct vy_range *n)
 		ss_rqdelete(&p->branch, &n->nodebranch);
 	if (mask & SI_COMPACT)
 		ss_rqdelete(&p->compact, &n->nodecompact);
-	if (mask & SI_TEMP)
-		ss_rqdelete(&p->temp, &n->nodetemp);
 	return 0;
 }
 
@@ -8053,29 +8021,6 @@ vy_planner_peek_compact(struct vy_planner *p, struct vy_plan *plan)
 match:
 	vy_range_lock(n);
 	plan->explain = SI_EBRANCH_COUNT;
-	plan->node = n;
-	return 1;
-}
-
-static inline int
-vy_planner_peek_compact_temperature(struct vy_planner *p, struct vy_plan *plan)
-{
-	/* try to peek a hottest node with number of
-	 * branches >= watermark */
-	struct vy_range *n;
-	struct ssrqnode *pn = NULL;
-	while ((pn = ss_rqprev(&p->temp, pn))) {
-		n = container_of(pn, struct vy_range, nodetemp);
-		if (n->flags & SI_LOCK)
-			continue;
-		if (n->branch_count >= plan->a)
-			goto match;
-		return 0;
-	}
-	return 0;
-match:
-	vy_range_lock(n);
-	plan->explain = SI_ENONE;
 	plan->node = n;
 	return 1;
 }
@@ -8198,8 +8143,6 @@ static int vy_planner(struct vy_planner *p, struct vy_plan *plan)
 	case SI_COMPACT_INDEX:
 		return vy_planner_peek_branch(p, plan);
 	case SI_COMPACT:
-		if (plan->b == 1)
-			return vy_planner_peek_compact_temperature(p, plan);
 		return vy_planner_peek_compact(p, plan);
 	case SI_NODEGC:
 		return vy_planner_peek_nodegc(p, plan);
@@ -8222,7 +8165,6 @@ static int vy_profiler_begin(struct vy_profiler *p, struct vinyl_index *i)
 {
 	memset(p, 0, sizeof(*p));
 	p->i = i;
-	p->temperature_min = 100;
 	vy_index_lock(i);
 	return 0;
 }
@@ -8263,58 +8205,11 @@ vy_profiler_histogram_branch(struct vy_profiler *p)
 	}
 }
 
-static void
-vy_profiler_histogram_temperature(struct vy_profiler *p)
-{
-	/* build histogram */
-	static struct {
-		int nodes;
-		int branches;
-	} h[101];
-	memset(h, 0, sizeof(h));
-	struct vy_range *n;
-	struct ssrqnode *pn = NULL;
-	while ((pn = ss_rqprev(&p->i->p.temp, pn)))
-	{
-		n = container_of(pn, struct vy_range, nodetemp);
-		h[pn->v].nodes++;
-		h[pn->v].branches += n->branch_count;
-	}
-
-	/* prepare histogram string */
-	int count = 0;
-	int i = 100;
-	int size = 0;
-	while (i >= 0 && count < 10) {
-		if (h[i].nodes == 0) {
-			i--;
-			continue;
-		}
-		size += snprintf(p->histogram_temperature_sz + size,
-		                 sizeof(p->histogram_temperature_sz) - size,
-		                 "[%d]:%d-%d ", i,
-		                 h[i].nodes, h[i].branches);
-		i--;
-		count++;
-	}
-	if (size == 0)
-		p->histogram_temperature_ptr = NULL;
-	else {
-		p->histogram_temperature_ptr = p->histogram_temperature_sz;
-	}
-}
-
 static int vy_profiler_(struct vy_profiler *p)
 {
-	uint32_t temperature_total = 0;
 	uint64_t memory_used = 0;
 	struct vy_range *n = vy_range_tree_first(&p->i->tree);
 	while (n) {
-		if (p->temperature_max < n->temperature)
-			p->temperature_max = n->temperature;
-		if (p->temperature_min > n->temperature)
-			p->temperature_min = n->temperature;
-		temperature_total += n->temperature;
 		p->total_node_count++;
 		p->count += n->i0.tree.size;
 		p->count += n->i1.tree.size;
@@ -8343,15 +8238,12 @@ static int vy_profiler_(struct vy_profiler *p)
 	if (p->total_node_count > 0) {
 		p->total_branch_avg =
 			p->total_branch_count / p->total_node_count;
-		p->temperature_avg =
-			temperature_total / p->total_node_count;
 	}
 	p->memory_used = memory_used;
 	p->read_disk  = p->i->read_disk;
 	p->read_cache = p->i->read_cache;
 
 	vy_profiler_histogram_branch(p);
-	vy_profiler_histogram_temperature(p);
 	return 0;
 }
 
@@ -8403,7 +8295,7 @@ si_readdup(struct siread *q, struct sv *result)
 }
 
 static inline void
-si_readstat(struct siread *q, int cache, struct vy_range *n, uint32_t reads)
+si_readstat(struct siread *q, int cache, uint32_t reads)
 {
 	struct vinyl_index *index = q->index;
 	if (cache) {
@@ -8412,15 +8304,6 @@ si_readstat(struct siread *q, int cache, struct vy_range *n, uint32_t reads)
 	} else {
 		index->read_disk += reads;
 		q->read_disk += reads;
-	}
-	/* update temperature */
-	if (index->conf.temperature) {
-		n->temperature_reads += reads;
-		uint64_t total = index->read_disk + index->read_cache;
-		if (unlikely(total == 0))
-			return;
-		n->temperature = (n->temperature_reads * 100ULL) / total;
-		vy_planner_update(&q->index->p, SI_TEMP, n);
 	}
 }
 
@@ -8456,7 +8339,7 @@ si_getindex(struct siread *q, struct vy_range *n)
 	if (ref == NULL)
 		return 0;
 
-	si_readstat(q, 1, n, 1);
+	si_readstat(q, 1, 1);
 	struct sv vret;
 	sv_from_tuple(&vret, ref->v);
 	return si_getresult(q, &vret, 0);
@@ -8490,7 +8373,7 @@ si_getbranch(struct siread *q, struct vy_range *n, struct sicachebranch *c)
 	};
 	rc = sd_read_open(&c->i, &arg, q->key, q->keysize);
 	int reads = sd_read_stat(&c->i);
-	si_readstat(q, 0, n, reads);
+	si_readstat(q, 0, reads);
 	if (unlikely(rc <= 0))
 		return rc;
 	/* prepare sources */
@@ -8568,7 +8451,7 @@ si_rangebranch(struct siread *q, struct vy_range *n,
 	/* iterate cache */
 	if (sd_read_has(&c->i)) {
 		struct svmergesrc *s = sv_mergeadd(m, &c->i);
-		si_readstat(q, 1, n, 1);
+		si_readstat(q, 1, 1);
 		s->ptr = c;
 		return 1;
 	}
@@ -8602,7 +8485,7 @@ si_rangebranch(struct siread *q, struct vy_range *n,
 	};
 	int rc = sd_read_open(&c->i, &arg, q->key, q->keysize);
 	int reads = sd_read_stat(&c->i);
-	si_readstat(q, 0, n, reads);
+	si_readstat(q, 0, reads);
 	if (unlikely(rc == -1))
 		return -1;
 	if (unlikely(! sd_read_has(&c->i)))
@@ -8888,7 +8771,7 @@ si_deploy(struct vinyl_index *index, struct runtime *r, int create_directory)
 		return -1;
 	}
 	si_insert(index, n);
-	vy_planner_update(&index->p, SI_COMPACT|SI_BRANCH|SI_TEMP, n);
+	vy_planner_update(&index->p, SI_COMPACT|SI_BRANCH, n);
 	index->size = vy_range_size(n);
 	return 1;
 }
@@ -9135,7 +9018,7 @@ si_recovercomplete(struct sitrack *track, struct runtime *r, struct vinyl_index 
 		}
 		n->recover = SI_RDB;
 		si_insert(index, n);
-		vy_planner_update(&index->p, SI_COMPACT|SI_BRANCH|SI_TEMP, n);
+		vy_planner_update(&index->p, SI_COMPACT|SI_BRANCH, n);
 		vy_bufiterref_next(&i);
 	}
 	return 0;
@@ -10512,10 +10395,6 @@ vy_info_link_indexes(struct vinyl_env *e, struct vy_info_link **pc)
 		sr_C(&p, pc, "count_dup", VINYL_U64, &o->rtp.count_dup);
 		sr_C(&p, pc, "read_disk", VINYL_U64, &o->rtp.read_disk);
 		sr_C(&p, pc, "read_cache", VINYL_U64, &o->rtp.read_cache);
-		sr_C(&p, pc, "temperature_avg", VINYL_U32, &o->rtp.temperature_avg);
-		sr_C(&p, pc, "temperature_min", VINYL_U32, &o->rtp.temperature_min);
-		sr_C(&p, pc, "temperature_max", VINYL_U32, &o->rtp.temperature_max);
-		sr_C(&p, pc, "temperature_histogram", VINYL_STRINGPTR, &o->rtp.histogram_temperature_ptr);
 		sr_C(&p, pc, "node_count", VINYL_U32, &o->rtp.total_node_count);
 		sr_C(&p, pc, "branch_count", VINYL_U32, &o->rtp.total_branch_count);
 		sr_C(&p, pc, "branch_avg", VINYL_U32, &o->rtp.total_branch_avg);
@@ -10810,7 +10689,6 @@ vy_index_conf_create(struct vy_index_conf *conf, struct key_def *key_def)
 		goto error;
 	}
 
-	conf->temperature           = 1;
 	/* path */
 	if (key_def->opts.path[0] == '\0') {
 		char path[1024];
