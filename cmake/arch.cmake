@@ -1,3 +1,9 @@
+if (NOT CMAKE_SYSTEM_PROCESSOR)
+    message(FATAL_ERROR "Missing CMAKE_SYSTEM_PROCESSOR. "
+        "Please ensure that CMake is installed properly or "
+        "add CMAKE_SYSTEM_PROCESSOR into your toolchain file.")
+endif ()
+
 test_big_endian(HAVE_BYTE_ORDER_BIG_ENDIAN)
 #
 # We do not perform host-to-network byte order translation,
@@ -12,7 +18,6 @@ if (${HAVE_BYTE_ORDER_BIG_ENDIAN} OR
     ${CMAKE_SYSTEM_PROCESSOR} MATCHES "^alpha")
     message (FATAL_ERROR "Unsupported architecture -- ${CMAKE_SYSTEM_PROCESSOR}, ")
     message (FATAL_ERROR "Tarantool currently only supports little-endian hardware")
-    message (FATAL_ERROR "with unaligned word access.")
 endif()
 
 #
