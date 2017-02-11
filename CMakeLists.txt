@@ -23,6 +23,7 @@ find_program(CAT cat)
 find_program(GIT git)
 find_program(LD ld)
 find_program(CTAGS ctags)
+find_program(GENERATOR Generate)
 
 # Define PACKAGE macro in tarantool/config.h
 set (PACKAGE "Tarantool")

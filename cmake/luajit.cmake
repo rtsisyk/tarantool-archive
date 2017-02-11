@@ -28,6 +28,15 @@
 # LUAJIT_INCLUDE_DIRS
 #
 
+if(TARGET_OS_FREEBSD OR TARGET_OS_NETBSD)
+    find_program(GMAKE gmake)
+    if(NOT GMAKE)
+        message(FATAL_ERROR "Failed to find GNU Make to build LuaJIT")
+    endif()
+else()
+    set(GMAKE "${MAKE}")
+endif()
+
 #
 # Bundled LuaJIT paths.
 #
@@ -215,8 +224,8 @@ macro(luajit_build)
     if (${PROJECT_BINARY_DIR} STREQUAL ${PROJECT_SOURCE_DIR})
         add_custom_command(OUTPUT ${PROJECT_BINARY_DIR}/third_party/luajit/src/libluajit.a
             WORKING_DIRECTORY ${PROJECT_BINARY_DIR}/third_party/luajit
-            COMMAND $(MAKE) ${luajit_buildoptions} clean
-            COMMAND $(MAKE) -C src ${luajit_buildoptions} jit/vmdef.lua libluajit.a
+	    COMMAND ${GMAKE} ${luajit_buildoptions} clean
+	    COMMAND ${GMAKE} -C src ${luajit_buildoptions} jit/vmdef.lua libluajit.a
             DEPENDS ${CMAKE_SOURCE_DIR}/CMakeCache.txt
         )
     else()
@@ -226,8 +235,8 @@ macro(luajit_build)
         add_custom_command(OUTPUT ${PROJECT_BINARY_DIR}/third_party/luajit/src/libluajit.a
             WORKING_DIRECTORY ${PROJECT_BINARY_DIR}/third_party/luajit
             COMMAND ${CMAKE_COMMAND} -E copy_directory ${PROJECT_SOURCE_DIR}/third_party/luajit ${PROJECT_BINARY_DIR}/third_party/luajit
-            COMMAND $(MAKE) ${luajit_buildoptions} clean
-            COMMAND $(MAKE) -C src ${luajit_buildoptions} jit/vmdef.lua libluajit.a
+	    COMMAND ${GMAKE} ${luajit_buildoptions} clean
+	    COMMAND ${GMAKE} -C src ${luajit_buildoptions} jit/vmdef.lua libluajit.a
             DEPENDS ${PROJECT_BINARY_DIR}/CMakeCache.txt ${PROJECT_BINARY_DIR}/third_party/luajit
         )
     endif()
