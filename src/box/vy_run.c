@@ -1827,3 +1827,216 @@ vy_run_recover(struct vy_run *run, const char *index_path,
 	return -1;
 }
 
+static NODISCARD int
+vy_slice_stream_read_page(struct vy_slice_stream *stream)
+{
+	ZSTD_DStream *zdctx = tt_pthread_getspecific(stream->run_env->zdctx_key);
+	if (zdctx == NULL) {
+		zdctx = ZSTD_createDStream();
+		if (zdctx == NULL) {
+			diag_set(OutOfMemory, sizeof(zdctx), "malloc",
+				 "zstd context");
+			return -1;
+		}
+		tt_pthread_setspecific(stream->run_env->zdctx_key, zdctx);
+	}
+
+	struct vy_page_info *page_info = vy_run_page_info(stream->slice->run,
+							  stream->page_no);
+	stream->page = vy_page_new(page_info);
+	if (stream->page == NULL)
+		return -1;
+
+	if (vy_page_read(stream->page, page_info,
+			 stream->slice->run->fd, zdctx) != 0) {
+		vy_page_delete(stream->page);
+		stream->page = NULL;
+		return -1;
+	}
+	return 0;
+
+}
+
+
+/**
+ * Binary search in page index
+ * @retval page number
+ */
+static uint32_t
+vy_slice_stream_search_page(struct vy_slice_stream *stream)
+{
+	assert(stream->slice->begin != NULL);
+	struct vy_run *run = stream->slice->run;
+	uint32_t beg = 0;
+	uint32_t end = run->info.count;
+	while (beg != end) {
+		uint32_t mid = beg + (end - beg) / 2;
+		struct vy_page_info *page_info;
+		page_info = vy_run_page_info(run, mid);
+		int cmp = vy_stmt_compare_with_raw_key(stream->slice->begin,
+						       page_info->min_key,
+						       stream->key_def);
+		if (cmp > 0)
+			beg = mid + 1;
+		else
+			end = mid;
+	}
+	return end;
+}
+
+/**
+ * Binary search in page
+ * @retval position in the page
+ */
+static uint32_t
+vy_slice_stream_search_in_page(struct vy_slice_stream *stream)
+{
+	assert(stream->slice->begin != NULL);
+	uint32_t beg = 0;
+	uint32_t end = stream->page->count;
+	while (beg != end) {
+		uint32_t mid = beg + (end - beg) / 2;
+		struct tuple *fnd_key =
+			vy_page_stmt(stream->page, mid, stream->key_def,
+				     stream->format, stream->upsert_format,
+				     stream->is_primary);
+		if (fnd_key == NULL)
+			return UINT32_MAX;
+		int cmp = vy_stmt_compare(fnd_key, stream->slice->begin,
+					  stream->key_def);
+		if (cmp < 0)
+			beg = mid + 1;
+		else
+			end = mid;
+		tuple_unref(fnd_key);
+	}
+	return end;
+}
+
+/**
+ * Binary search in a run for the given key.
+ * @retval 0 success
+ * @retval -1 read or memory error
+ */
+static NODISCARD int
+vy_slice_stream_search(struct vy_slice_stream *stream)
+{
+	assert(stream->page == NULL);
+	if (stream->slice->begin == NULL) {
+		stream->page_no = 0;
+		stream->pos_in_page = 0;
+		return 0;
+	}
+	stream->page_no = vy_slice_stream_search_page(stream);
+	if (stream->page_no == 0) {
+		stream->pos_in_page = 0;
+		return 0;
+	}
+	stream->page_no--;
+
+	if (vy_slice_stream_read_page(stream) != 0)
+		return -1;
+
+	stream->pos_in_page = vy_slice_stream_search_in_page(stream);
+	if (stream->pos_in_page == UINT32_MAX)
+		return -1;
+	if (stream->pos_in_page == stream->page->count) {
+		vy_page_delete(stream->page);
+		stream->page = NULL;
+		stream->page_no++;
+		stream->pos_in_page = 0;
+	}
+	return 0;
+}
+
+static NODISCARD int
+vy_slice_stream_next(struct vy_stmt_stream *virt_stream, struct tuple **ret)
+{
+	assert(virt_stream->iface->next == vy_slice_stream_next);
+	struct vy_slice_stream *stream = (struct vy_slice_stream *)virt_stream;
+
+	if (stream->pos_in_page == UINT32_MAX &&
+	    vy_slice_stream_search(stream) != 0)
+		return -1;
+
+	if (stream->page_no >= stream->slice->run->info.count) {
+		*ret = NULL;
+		return 0;
+	}
+
+	if (stream->page == NULL && vy_slice_stream_read_page(stream) != 0)
+		return -1;
+
+	struct tuple *tuple =
+		vy_page_stmt(stream->page, stream->pos_in_page,
+			     stream->key_def, stream->format,
+			     stream->upsert_format, stream->is_primary);
+
+	if (tuple == NULL)
+		return -1;
+
+	if (stream->slice->end != NULL &&
+	    vy_stmt_compare_with_key(tuple, stream->slice->end,
+				     stream->key_def) >= 0) {
+		*ret = NULL;
+		return 0;
+	}
+
+	if (stream->tuple != NULL)
+		tuple_unref(stream->tuple);
+	stream->tuple = tuple;
+	*ret = tuple;
+
+	struct vy_page_info *page_info = vy_run_page_info(stream->slice->run,
+							  stream->page_no);
+	stream->pos_in_page++;
+	if (stream->pos_in_page >= page_info->count) {
+		vy_page_delete(stream->page);
+		stream->page = NULL;
+		stream->page_no++;
+		stream->pos_in_page = 0;
+	}
+
+	return 0;
+}
+
+static void
+vy_slice_stream_close(struct vy_stmt_stream *virt_stream)
+{
+	assert(virt_stream->iface->close == vy_slice_stream_close);
+	struct vy_slice_stream *stream = (struct vy_slice_stream *)virt_stream;
+	if (stream->page != NULL) {
+		vy_page_delete(stream->page);
+		stream->page = NULL;
+	}
+	if (stream->tuple != NULL) {
+		tuple_unref(stream->tuple);
+		stream->tuple = NULL;
+	}
+}
+
+static const struct vy_stmt_stream_iface vy_slice_stream_iface = {
+	.next = vy_slice_stream_next,
+	.close = vy_slice_stream_close
+};
+
+void
+vy_slice_stream_open(struct vy_slice_stream *stream, struct vy_slice *slice,
+		   const struct key_def *key_def, struct tuple_format *format,
+		   struct tuple_format *upsert_format,
+		   struct vy_run_env *run_env, bool is_primary)
+{
+	stream->base.iface = &vy_slice_stream_iface;
+
+	stream->page_no = 0;
+	stream->pos_in_page = UINT32_MAX;
+	stream->page = NULL;
+	stream->tuple = NULL;
+
+	stream->slice = slice;
+	stream->key_def = key_def;
+	stream->format = format;
+	stream->upsert_format = upsert_format;
+	stream->run_env = run_env;
+	stream->is_primary = is_primary;
+}
