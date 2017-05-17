@@ -35,7 +35,7 @@ local VINDEX_ID        = 289
 local IPROTO_STATUS_KEY    = 0x00
 local IPROTO_ERRNO_MASK    = 0x7FFF
 local IPROTO_SYNC_KEY      = 0x01
-local IPROTO_SCHEMA_ID_KEY = 0x05
+local IPROTO_SCHEMA_VERSION_KEY = 0x05
 local IPROTO_DATA_KEY      = 0x30
 local IPROTO_ERROR_KEY     = 0x31
 local IPROTO_GREETING_SIZE = 128
@@ -61,7 +61,7 @@ local method_codec           = {
     upsert  = internal.encode_upsert,
     select  = internal.encode_select,
     -- inject raw data into connection, used by console and tests
-    inject = function(buf, id, schema_id, bytes)
+    inject = function(buf, id, schema_version, bytes)
         local ptr = buf:reserve(#bytes)
         ffi.copy(ptr, bytes, #bytes)
         buf.wpos = ptr + #bytes
@@ -114,7 +114,7 @@ local function next_id(id) return band(id + 1, 0x7FFFFFFF) end
 --  'state_changed', state, errno, error
 --  'handshake', greeting           -> nil (accept) / errno, error (reject)
 --  'will_fetch_schema'             -> true (approve) / false (skip fetch)
---  'did_fetch_schema', schema_id, spaces, indices
+--  'did_fetch_schema', schema_version, spaces, indices
 --  'will_reconnect', errno, error  -> true (approve) / false (reject)
 --
 -- Suggestion for callback writers: sleep a few secs before approving
@@ -149,7 +149,7 @@ local function create_transport(host, port, user, password, callback)
     local recv_buf         = buffer.ibuf(buffer.READAHEAD)
 
     -- STATE SWITCHING --
-    local function set_state(new_state, new_errno, new_error, schema_id)
+    local function set_state(new_state, new_errno, new_error, schema_version)
         state = new_state
         last_errno = new_errno
         last_error = new_error
@@ -159,14 +159,14 @@ local function create_transport(host, port, user, password, callback)
             -- cancel all requests but the ones bearing the particular
             -- schema id; if schema id was omitted or we aren't fetching
             -- schema, cancel everything
-            if not schema_id or state ~= 'fetch_schema' then
-                schema_id = -1
+            if not schema_version or state ~= 'fetch_schema' then
+                schema_version = -1
             end
             local next_id, next_request = next(requests)
             while next_id do
                 local id, request = next_id, next_request
                 next_id, next_request = next(requests, id)
-                if request.schema_id ~= schema_id then
+                if request.schema_version ~= schema_version then
                     requests[id] = nil -- this marks the request as completed
                     request.errno  = new_errno
                     request.response = new_error
@@ -219,7 +219,7 @@ local function create_transport(host, port, user, password, callback)
     end
 
     -- REQUEST/RESPONSE --
-    local function perform_request(timeout, buffer, method, schema_id, ...)
+    local function perform_request(timeout, buffer, method, schema_version, ...)
         if state ~= 'active' then
             return last_errno or E_NO_CONNECTION, last_error
         end
@@ -230,12 +230,12 @@ local function create_transport(host, port, user, password, callback)
             worker_fiber:wakeup()
         end
         local id = next_request_id
-        method_codec[method](send_buf, id, schema_id, ...)
+        method_codec[method](send_buf, id, schema_version, ...)
         next_request_id = next_id(id)
         local request = table_new(0, 6) -- reserve space for 6 keys
         request.client = fiber_self()
         request.method = method
-        request.schema_id = schema_id
+        request.schema_version = schema_version
         request.buffer = buffer
         requests[id] = request
         repeat
@@ -422,23 +422,25 @@ local function create_transport(host, port, user, password, callback)
             return error_sm(E_NO_CONNECTION, body[IPROTO_ERROR_KEY])
         end
         set_state('fetch_schema')
-        return iproto_schema_sm(hdr[IPROTO_SCHEMA_ID_KEY])
+        return iproto_schema_sm(hdr[IPROTO_SCHEMA_VERSION_KEY])
     end
 
-    iproto_schema_sm = function(schema_id)
+    iproto_schema_sm = function(schema_version)
         if not callback('will_fetch_schema') then
             set_state('active')
-            return iproto_sm(schema_id)
+            return iproto_sm(schema_version)
         end
         local select1_id = new_request_id()
         local select2_id = new_request_id()
         local response = {}
         -- fetch everything from space _vspace, 2 = ITER_ALL
-        encode_select(send_buf, select1_id, nil, VSPACE_ID, 0, 2, 0, 0xFFFFFFFF, nil)
+        encode_select(send_buf, select1_id, nil, VSPACE_ID, 0, 2, 0,
+                      0xFFFFFFFF, nil)
         -- fetch everything from space _vindex, 2 = ITER_ALL
-        encode_select(send_buf, select2_id, nil, VINDEX_ID, 0, 2, 0, 0xFFFFFFFF, nil)
-        schema_id = nil -- any schema_id will do provided that
-                        -- it is consistent across responses
+        encode_select(send_buf, select2_id, nil, VINDEX_ID, 0, 2, 0,
+                      0xFFFFFFFF, nil)
+        schema_version = nil -- any schema_version will do provided that
+                             -- it is consistent across responses
         repeat
             local err, hdr, body_rpos, body_end = send_and_recv_iproto()
             if err then return error_sm(err, hdr) end
@@ -447,13 +449,13 @@ local function create_transport(host, port, user, password, callback)
             if id == select1_id or id == select2_id then
                 -- response to a schema query we've submitted
                 local status = hdr[IPROTO_STATUS_KEY]
-                local response_schema_id = hdr[IPROTO_SCHEMA_ID_KEY]
+                local response_schema_version = hdr[IPROTO_SCHEMA_VERSION_KEY]
                 if status ~= 0 then
                     return error_sm(E_NO_CONNECTION, body[IPROTO_ERROR_KEY])
                 end
-                if schema_id == nil then
-                    schema_id = response_schema_id
-                elseif schema_id ~= response_schema_id then
+                if schema_version == nil then
+                    schema_version = response_schema_version
+                elseif schema_version ~= response_schema_version then
                     -- schema changed while fetching schema; restart loader
                     return iproto_schema_sm()
                 end
@@ -462,29 +464,30 @@ local function create_transport(host, port, user, password, callback)
                 response[id] = body[IPROTO_DATA_KEY]
             end
         until response[select1_id] and response[select2_id]
-        callback('did_fetch_schema', schema_id,
+        callback('did_fetch_schema', schema_version,
                  response[select1_id], response[select2_id])
         set_state('active')
-        return iproto_sm(schema_id)
+        return iproto_sm(schema_version)
     end
 
-    iproto_sm = function(schema_id)
+    iproto_sm = function(schema_version)
         local err, hdr, body_rpos, body_end = send_and_recv_iproto()
         if err then return error_sm(err, hdr) end
         dispatch_response_iproto(hdr, body_rpos, body_end)
         local status = hdr[IPROTO_STATUS_KEY]
-        local response_schema_id = hdr[IPROTO_SCHEMA_ID_KEY]
-        if response_schema_id > 0 and response_schema_id ~= schema_id then
-            -- schema_id has been changed - start to load a new version.
-            -- Sic: self._schema_id will be updated only after reload.
+        local response_schema_version = hdr[IPROTO_SCHEMA_VERSION_KEY]
+        if response_schema_version > 0 and
+           response_schema_version ~= schema_version then
+            -- schema_version has been changed - start to load a new version.
+            -- Sic: self.schema_version will be updated only after reload.
             local body
             body_end, body = ibuf_decode(body_rpos)
             set_state('fetch_schema',
                       E_WRONG_SCHEMA_VERSION, body[IPROTO_ERROR_KEY],
-                      response_schema_id)
-            return iproto_schema_sm(schema_id)
+                      response_schema_version)
+            return iproto_schema_sm(schema_version)
         end
-        return iproto_sm(schema_id)
+        return iproto_sm(schema_version)
     end
 
     error_sm = function(err, msg)
@@ -569,6 +572,7 @@ local function remote_serialize(self)
         state = self.state,
         error = self.error,
         protocol = self.protocol,
+        schema_version = self.schema_version,
         peer_uuid = self.peer_uuid,
         peer_version_id = self.peer_version_id
     }
@@ -629,7 +633,10 @@ local function connect(...)
 
         remote._space_mt = space_metatable(remote)
         remote._index_mt = index_metatable(remote)
-        if opts.call_16 then remote.call = remote.call_16 end
+        if opts.call_16 then
+            remote.call = remote.call_16
+            remote.eval = remote.eval_16
+        end
     end
     remote._on_schema_reload = trigger.new("on_schema_reload")
     remote._transport = create_transport(host, port, user, password, callback)
@@ -640,30 +647,44 @@ local function connect(...)
     return remote
 end
 
-local function remote_check(remote, method)
+local function check_remote_arg(remote, method)
     if type(remote) ~= 'table' then
         local fmt = 'Use remote:%s(...) instead of remote.%s(...):'
         box.error(E_PROC_LUA, string.format(fmt, method, method))
     end
 end
 
+local function check_call_args(args)
+    if args ~= nil and type(args) ~= 'table' then
+        error("Use remote:call(func_name, {arg1, arg2, ...}, opts) "..
+              "instead of remote:call(func_name, arg1, arg2, ...)")
+    end
+end
+
+local function check_eval_args(args)
+    if args ~= nil and type(args) ~= 'table' then
+        error("Use remote:eval(expression, {arg1, arg2, ...}, opts) "..
+              "instead of remote:eval(expression, arg1, arg2, ...)")
+    end
+end
+
 function remote_methods:close()
-    remote_check(self, 'close')
+    check_remote_arg(self, 'close')
     self._transport.close()
 end
 
 function remote_methods:on_schema_reload(...)
-    remote_check(self, 'on_schema_reload')
+    check_remote_arg(self, 'on_schema_reload')
     return self._on_schema_reload(...)
 end
 
 function remote_methods:is_connected()
-    remote_check(self, 'is_connected')
+    check_remote_arg(self, 'is_connected')
     return self.state == 'active'
 end
 
 function remote_methods:wait_connected(timeout)
-    remote_check(self, 'wait_connected')
+    check_remote_arg(self, 'wait_connected')
     return self._transport.wait_state('active', timeout)
 end
 
@@ -690,7 +711,7 @@ function remote_methods:_request(method, opts, ...)
             timeout = deadline and max(0, deadline - fiber_time())
         end
         err, res = perform_request(timeout, buffer, method,
-                                   self._schema_id, ...)
+                                   self.schema_version, ...)
         if not err and buffer ~= nil then
             return res -- the length of xrow.body
         elseif not err then
@@ -711,7 +732,7 @@ function remote_methods:_request(method, opts, ...)
 end
 
 function remote_methods:ping(opts)
-    remote_check(self, 'ping')
+    check_remote_arg(self, 'ping')
     local timeout = opts and opts.timeout
     if timeout == nil then
         -- conn:timeout(timeout):ping()
@@ -721,33 +742,52 @@ function remote_methods:ping(opts)
                             or (opts and opts.timeout)
     end
     local err = self._transport.perform_request(timeout, nil, 'ping',
-                                                self._schema_id)
+                                                self.schema_version)
     return not err or err == E_WRONG_SCHEMA_VERSION
 end
 
 function remote_methods:reload_schema()
-    remote_check(self, 'reload_schema')
+    check_remote_arg(self, 'reload_schema')
     self:_request('select', nil, VSPACE_ID, 0, box.index.GE, 0, 0xFFFFFFFF,
                   nil)
 end
 
+-- @deprecated since 1.7.4
 function remote_methods:call_16(func_name, ...)
-    remote_check(self, 'call')
+    check_remote_arg(self, 'call')
     return self:_request('call_16', nil, tostring(func_name), {...})
 end
 
-function remote_methods:call(func_name, ...)
-    remote_check(self, 'call')
-    return unpack(self:_request('call_17', nil, tostring(func_name), {...}))
+function remote_methods:call(func_name, args, opts)
+    check_remote_arg(self, 'call')
+    check_call_args(args)
+    args = args or {}
+    local res = self:_request('call_17', opts, tostring(func_name), args)
+    if type(res) ~= 'table' then
+        return res
+    end
+    return unpack(res)
 end
 
-function remote_methods:eval(code, ...)
-    remote_check(self, 'eval')
+-- @deprecated since 1.7.4
+function remote_methods:eval_16(code, ...)
+    check_remote_arg(self, 'eval')
     return unpack(self:_request('eval', nil, code, {...}))
 end
 
+function remote_methods:eval(code, args, opts)
+    check_remote_arg(self, 'eval')
+    check_eval_args(args)
+    args = args or {}
+    local res = self:_request('eval', opts, code, args)
+    if type(res) ~= 'table' then
+        return res
+    end
+    return unpack(res)
+end
+
 function remote_methods:wait_state(state, timeout)
-    remote_check(self, 'wait_state')
+    check_remote_arg(self, 'wait_state')
     if timeout == nil then
         local deadline = self._deadlines[fiber_self()]
         timeout = deadline and max(0, deadline-fiber_time())
@@ -759,7 +799,7 @@ local compat_warning_said = false
 
 -- @deprecated since 1.7.4
 function remote_methods:timeout(timeout)
-    remote_check(self, 'timeout')
+    check_remote_arg(self, 'timeout')
     if not compat_warning_said then
         compat_warning_said = true
         log.warn("netbox:timeout(timeout) is deprecated since 1.7.4, "..
@@ -770,13 +810,14 @@ function remote_methods:timeout(timeout)
     return self
 end
 
-function remote_methods:_install_schema(schema_id, spaces, indices)
+function remote_methods:_install_schema(schema_version, spaces, indices)
     local sl, space_mt, index_mt = {}, self._space_mt, self._index_mt
     for _, space in pairs(spaces) do
         local name = space[3]
         local id = space[1]
         local engine = space[4]
         local field_count = space[5]
+        local format = space[7] or {}
 
         local s = {
             id              = id,
@@ -785,7 +826,9 @@ function remote_methods:_install_schema(schema_id, spaces, indices)
             field_count     = field_count,
             enabled         = true,
             index           = {},
-            temporary       = false
+            temporary       = false,
+            _format         = format,
+            connection      = self
         }
         if #space > 5 then
             local opts = space[6]
@@ -850,7 +893,7 @@ function remote_methods:_install_schema(schema_id, spaces, indices)
         end
     end
 
-    self._schema_id = schema_id
+    self.schema_version = schema_version
     self.space = sl
     self._on_schema_reload:run(self)
 end
@@ -861,7 +904,7 @@ console_methods.on_schema_reload = remote_methods.on_schema_reload
 console_methods.is_connected = remote_methods.is_connected
 console_methods.wait_state = remote_methods.wait_state
 function console_methods:eval(line, timeout)
-    remote_check(self, 'eval')
+    check_remote_arg(self, 'eval')
     local err, res
     local transport = self._transport
     local pr = transport.perform_request
@@ -928,6 +971,14 @@ space_metatable = function(remote)
     function methods:get(key, opts)
         check_space_arg(self, 'get')
         return check_primary_index(self):get(key, opts)
+    end
+
+    function methods:format(format)
+        if format == nil then
+            return self._format
+        else
+            box.error(box.error.UNSUPPORTED, "net.box", "setting space format")
+        end
     end
 
     return { __index = methods, __metatable = false }
@@ -1046,10 +1097,10 @@ this_module.self = {
     timeout = function(self) return self end,
     wait_connected = function(self) return true end,
     is_connected = function(self) return true end,
-    call = function(_box, proc_name, ...)
-        if type(_box) ~= 'table' then
-            box.error(box.error.PROC_LUA, "usage: remote:call(proc_name, ...)")
-        end
+    call = function(_box, proc_name, args, opts)
+        check_remote_arg(_box, 'call')
+        check_call_args(args)
+        args = args or {}
         proc_name = tostring(proc_name)
         local status, proc, obj = pcall(package.loaded['box.internal'].
             call_loadproc, proc_name)
@@ -1059,15 +1110,15 @@ this_module.self = {
         end
         local result
         if obj ~= nil then
-            return handle_eval_result(pcall(proc, obj, ...))
+            return handle_eval_result(pcall(proc, obj, unpack(args)))
         else
-            return handle_eval_result(pcall(proc, ...))
+            return handle_eval_result(pcall(proc, unpack(args)))
         end
     end,
-    eval = function(_box, expr, ...)
-        if type(_box) ~= 'table' then
-            box.error(box.error.PROC_LUA, "usage: remote:eval(expr, ...)")
-        end
+    eval = function(_box, expr, args, opts)
+        check_remote_arg(_box, 'eval')
+        check_eval_args(args)
+        args = args or {}
         local proc, errmsg = loadstring(expr)
         if not proc then
             proc, errmsg = loadstring("return "..expr)
@@ -1076,7 +1127,7 @@ this_module.self = {
             rollback()
             return box.error(box.error.PROC_LUA, errmsg)
         end
-        return handle_eval_result(pcall(proc, ...))
+        return handle_eval_result(pcall(proc, unpack(args)))
     end
 }
 

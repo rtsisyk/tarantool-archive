@@ -81,12 +81,11 @@ VinylSpace::applyInitialJoinRow(struct space *space, struct request *request)
 	if (stmt.new_tuple)
 		tuple_unref(stmt.new_tuple);
 
-	if (vy_prepare(env, tx)) {
-		vy_rollback(env, tx);
+	if (vy_prepare(tx)) {
+		vy_rollback(tx);
 		diag_raise();
 	}
-	if (vy_commit(env, tx, signature))
-		panic("failed to commit vinyl transaction");
+	vy_commit(tx, signature);
 }
 
 /*
@@ -106,8 +105,6 @@ VinylSpace::executeReplace(struct txn *txn, struct space *space,
 
 	if (vy_replace(tx, stmt, space, request))
 		diag_raise();
-
-	assert(stmt->new_tuple != NULL);
 	return stmt->new_tuple;
 }
 

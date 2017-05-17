@@ -75,6 +75,7 @@
 #include <libutil.h>
 #include "box/lua/init.h" /* box_lua_init() */
 #include "box/session.h"
+#include "systemd.h"
 
 static pid_t master_pid = getpid();
 static struct pidfh *pid_file_handle;
@@ -300,6 +301,8 @@ daemonize()
 		master_pid = getpid();
 		break;
 	default:                                    /* parent */
+		/* Tell systemd about new main program using */
+		errno = 0;
 		master_pid = pid;
 		exit(EXIT_SUCCESS);
 	}
@@ -437,6 +440,7 @@ load_cfg()
 			cfg_geti("log_level"),
 			cfg_geti("log_nonblock"),
 			background);
+	systemd_init();
 
 	if (background)
 		daemonize();
@@ -513,6 +517,7 @@ tarantool_free(void)
 	memory_free();
 	random_free();
 #endif
+	systemd_free();
 }
 
 int
@@ -620,18 +625,18 @@ main(int argc, char **argv)
 	coeio_enable();
 	signal_init();
 	cbus_init();
-
 	tarantool_lua_init(tarantool_bin, main_argc, main_argv);
-	box_init();
-	box_lua_init(tarantool_L);
-
-	/* main core cleanup routine */
-	atexit(tarantool_free);
-
-	if (!loop())
-		panic("%s", "can't init event loop");
 
 	try {
+		box_init();
+		box_lua_init(tarantool_L);
+
+		/* main core cleanup routine */
+		atexit(tarantool_free);
+
+		if (!loop())
+			panic("%s", "can't init event loop");
+
 		int events = ev_activecnt(loop());
 		/*
 		 * Load user init script.  The script should have access
@@ -649,11 +654,14 @@ main(int argc, char **argv)
 		region_free(&fiber()->gc);
 		if (start_loop) {
 			say_crit("entering the event loop");
+			systemd_snotify("READY=1");
 			ev_now_update(loop());
 			ev_run(loop(), 0);
 		}
 	} catch (struct error *e) {
 		error_log(e);
+		systemd_snotify("STATUS=Failed to startup: %s",
+				box_error_message(e));
 		panic("%s", "fatal error, exiting the event loop");
 	} catch (...) {
 		/* This can only happen in case of a server bug. */

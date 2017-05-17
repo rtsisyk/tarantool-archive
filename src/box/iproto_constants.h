@@ -56,7 +56,7 @@ enum iproto_key {
 	IPROTO_REPLICA_ID = 0x02,
 	IPROTO_LSN = 0x03,
 	IPROTO_TIMESTAMP = 0x04,
-	IPROTO_SCHEMA_ID = 0x05,
+	IPROTO_SCHEMA_VERSION = 0x05,
 	/* Leave a gap for other keys in the header. */
 	IPROTO_SPACE_ID = 0x10,
 	IPROTO_INDEX_ID = 0x11,
@@ -84,7 +84,7 @@ enum iproto_key {
 #define bit(c) (1ULL<<IPROTO_##c)
 
 #define IPROTO_HEAD_BMAP (bit(REQUEST_TYPE) | bit(SYNC) | bit(REPLICA_ID) |\
-			  bit(LSN) | bit(SCHEMA_ID))
+			  bit(LSN) | bit(SCHEMA_VERSION))
 #define IPROTO_BODY_BMAP (bit(SPACE_ID) | bit(INDEX_ID) | bit(LIMIT) |\
 			  bit(OFFSET) | bit(ITERATOR) | bit(INDEX_BASE) |\
 			  bit(KEY) | bit(TUPLE) | bit(FUNCTION_NAME) | \
@@ -174,9 +174,19 @@ extern const char *iproto_type_strs[];
 static inline const char *
 iproto_type_name(uint32_t type)
 {
-	if (type >= IPROTO_TYPE_STAT_MAX)
+	if (type < IPROTO_TYPE_STAT_MAX)
+		return iproto_type_strs[type];
+
+	switch (type) {
+	case VY_INDEX_RUN_INFO:
+		return "RUNINFO";
+	case VY_INDEX_PAGE_INFO:
+		return "PAGEINFO";
+	case VY_RUN_PAGE_INDEX:
+		return "PAGEINDEX";
+	default:
 		return NULL;
-	return iproto_type_strs[type];
+	}
 }
 
 /**
@@ -263,14 +273,18 @@ struct PACKED request_replace_body {
  * @sa struct vy_run_info.
  */
 enum vy_run_info_key {
+	/** Min key in the run. */
+	VY_RUN_INFO_MIN_KEY = 1,
+	/** Max key in the run. */
+	VY_RUN_INFO_MAX_KEY = 2,
 	/** Minimal LSN over all statements in a run. */
-	VY_RUN_INFO_MIN_LSN = 1,
+	VY_RUN_INFO_MIN_LSN = 3,
 	/** Maximal LSN over all statements in a run. */
-	VY_RUN_INFO_MAX_LSN = 2,
+	VY_RUN_INFO_MAX_LSN = 4,
 	/** Number of pages in a run. */
-	VY_RUN_INFO_PAGE_COUNT = 3,
+	VY_RUN_INFO_PAGE_COUNT = 5,
 	/** Bloom filter for keys. */
-	VY_RUN_INFO_BLOOM = 4,
+	VY_RUN_INFO_BLOOM = 6,
 	/** The last key in this enum + 1 */
 	VY_RUN_INFO_KEY_MAX = VY_RUN_INFO_BLOOM + 1
 };
@@ -282,7 +296,7 @@ enum vy_run_info_key {
 static inline const char *
 vy_run_info_key_name(enum vy_run_info_key key)
 {
-	if (key < VY_RUN_INFO_MIN_LSN || key >= VY_RUN_INFO_KEY_MAX)
+	if (key < VY_RUN_INFO_MIN_KEY || key >= VY_RUN_INFO_KEY_MAX)
 		return NULL;
 	extern const char *vy_run_info_key_strs[];
 	return vy_run_info_key_strs[key];

@@ -52,8 +52,11 @@ add_library(box STATIC
     vinyl.c
     vy_stmt.c
     vy_mem.c
+    vy_run.c
+    vy_write_iterator.c
     vy_cache.c
     vy_log.c
+    vy_upsert.c
     space.cc
     func.cc
     alter.cc
@@ -63,6 +66,7 @@ add_library(box STATIC
     request.c
     txn.cc
     box.cc
+    gc.c
     user_def.c
     user.cc
     authentication.cc

@@ -25,3 +25,5 @@ tuple_max = string.rep('a', 1000000)
 #tuple_max
 t = tester:insert{#tuple_max, tuple_max}
 tester:drop()
+tuple_max = nil
+collectgarbage('collect')

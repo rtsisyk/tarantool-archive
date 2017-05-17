@@ -129,28 +129,34 @@ vy_mem_tree_cmp_key(const struct tuple *a, struct tree_mem_key *key,
  * and other keys in that chain.
  */
 struct vy_mem {
-	/** Link in range->frozen list. */
-	struct rlist in_frozen;
-	/** Link in scheduler->dirty_mems list. */
-	struct rlist in_dirty;
+	/** Link in range->sealed list. */
+	struct rlist in_sealed;
+	/*
+	 * Link in scheduler->dump_fifo list. The mem is
+	 * added to the list when it has the first statement
+	 * allocated in it.
+	 */
+	struct rlist in_dump_fifo;
 	/** BPS tree */
 	struct vy_mem_tree tree;
 	/** The total size of all tuples in this tree in bytes */
 	size_t used;
-	/** The minimum value of stmt->lsn in this tree */
+	/** The min and max values of stmt->lsn in this tree. */
 	int64_t min_lsn;
+	int64_t max_lsn;
 	/* A key definition for this index. */
-	struct index_def *index_def;
+	const struct key_def *key_def;
 	/** version is initially 0 and is incremented on every write */
 	uint32_t version;
 	/** Schema version at the time of creation. */
-	uint32_t sc_version;
-	/** Snapshot version at the time of creation. */
-	uint32_t snapshot_version;
+	uint32_t schema_version;
+	/**
+	 * Generation of statements stored in the tree.
+	 * Used as lsregion allocator identifier.
+	 */
+	int64_t generation;
 	/** Allocator for extents */
 	struct lsregion *allocator;
-	/** The last LSN for lsregion allocator */
-	const int64_t *allocator_lsn;
 	/**
 	 * Format of vy_mem REPLACE and DELETE tuples without
 	 * column mask.
@@ -214,18 +220,19 @@ vy_mem_wait_pinned(struct vy_mem *mem)
  * Instantiate a new in-memory level.
  *
  * @param allocator lsregion allocator to use for BPS tree extents
- * @param allocator_lsn a pointer to the latest LSN for lsregion.
- * @param index_def key definition.
+ * @param generation Generation of statements stored in the tree.
+ * @param key_def key definition.
  * @param format Format for REPLACE and DELETE tuples.
  * @param format_with_colmask Format for tuples, which have
  *        column mask.
  * @param upsert_format Format for UPSERT tuples.
+ * @param schema_version Schema version.
  * @retval new vy_mem instance on success.
  * @retval NULL on error, check diag.
  */
 struct vy_mem *
-vy_mem_new(struct lsregion *allocator, const int64_t *allocator_lsn,
-	   struct index_def *index_def, struct tuple_format *format,
+vy_mem_new(struct lsregion *allocator, int64_t generation,
+	   const struct key_def *key_def, struct tuple_format *format,
 	   struct tuple_format *format_with_colmask,
 	   struct tuple_format *upsert_format, uint32_t schema_version);
 
@@ -251,6 +258,22 @@ vy_mem_older_lsn(struct vy_mem *mem, const struct tuple *stmt);
  */
 int
 vy_mem_insert(struct vy_mem *mem, const struct tuple *stmt);
+
+/**
+ * Confirm insertion of a statement into the in-memory level.
+ * @param mem        vy_mem.
+ * @param stmt       Vinyl statement.
+ */
+void
+vy_mem_commit_stmt(struct vy_mem *mem, const struct tuple *stmt);
+
+/**
+ * Remove a statement from the in-memory level.
+ * @param mem        vy_mem.
+ * @param stmt       Vinyl statement.
+ */
+void
+vy_mem_rollback_stmt(struct vy_mem *mem, const struct tuple *stmt);
 
 /**
  * Iterator for in-memory level.
@@ -285,7 +308,12 @@ struct vy_mem_iterator {
 	/** Key to search. */
 	const struct tuple *key;
 	/* LSN visibility, iterator shows values with lsn <= than that */
-	const int64_t *vlsn;
+	const struct vy_read_view **read_view;
+	/**
+	 * If not NULL, start iteration from the key following
+	 * @before_first.
+	 */
+	struct tuple *before_first;
 
 	/* State of iterator */
 	/* Current position in tree */
@@ -316,7 +344,26 @@ struct vy_mem_iterator {
 void
 vy_mem_iterator_open(struct vy_mem_iterator *itr, struct vy_iterator_stat *stat,
 		     struct vy_mem *mem, enum iterator_type iterator_type,
-		     const struct tuple *key, const int64_t *vlsn);
+		     const struct tuple *key, const struct vy_read_view **rv,
+		     struct tuple *before_first);
+
+/**
+ * Simple stream over a mem. @see vy_stmt_stream.
+ */
+struct vy_mem_stream {
+	/** Parent class, must be the first member */
+	struct vy_stmt_stream base;
+	/** Mem to stream */
+	struct vy_mem *mem;
+	/** Current position */
+	struct vy_mem_tree_iterator curr_pos;
+};
+
+/**
+ * Open a mem stream. Use vy_stmt_stream api for further work.
+ */
+void
+vy_mem_stream_open(struct vy_mem_stream *stream, struct vy_mem *mem);
 
 #if defined(__cplusplus)
 } /* extern "C" */

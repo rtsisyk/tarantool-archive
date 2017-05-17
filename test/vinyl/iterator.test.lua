@@ -659,3 +659,50 @@ space:select({2}, {iterator = 'LE'})
 box.commit()
 
 space:drop()
+
+--make runs with more than one record with every key
+s = box.schema.space.create('test', { engine = 'vinyl' })
+pk = s:create_index('primary', { parts = { 1, 'uint' } })
+
+for i=1,10 do s:upsert({i, 1}, {{'+', 2, 1}}) end
+itr = create_iterator(s, {}, {})
+iterator_next(itr)
+for i=1,10 do s:upsert({i, 1}, {{'+', 2, 1}}) end
+iterator_next(itr)
+box.snapshot() -- create last-level run
+iterator_next(itr)
+for i=1,10 do s:upsert({i, 1}, {{'+', 2, 1}}) end
+iterator_next(itr)
+box.snapshot() -- create not-last-level run
+iterator_next(itr)
+for i=1,10 do s:upsert({i, 1}, {{'+', 2, 1}}) end
+iterator_next(itr)
+s:select{1}
+
+s:drop()
+
+-- gh-2394
+--
+-- Check GE/LE iterators in a transaction involving several spaces.
+--
+test_run:cmd("setopt delimiter ';'")
+s = {}
+for i=1,3 do
+    s[i] = box.schema.space.create('test'..i, { engine = 'vinyl' })
+    _ = s[i]:create_index('primary')
+    s[i]:insert{20, 'B'..i}
+    s[i]:insert{40, 'D'..i}
+end
+test_run:cmd("setopt delimiter ''");
+
+box.begin()
+for i=1,3 do s[i]:insert{10, 'A'..i} s[i]:insert{30, 'C'..i} s[i]:insert{50, 'E'..i} end
+s[1]:select({}, {iterator = 'GE'})
+s[1]:select({}, {iterator = 'LE'})
+s[2]:select({}, {iterator = 'GE'})
+s[2]:select({}, {iterator = 'LE'})
+s[3]:select({}, {iterator = 'GE'})
+s[3]:select({}, {iterator = 'LE'})
+box.rollback()
+
+for i=1,3 do s[i]:drop() end

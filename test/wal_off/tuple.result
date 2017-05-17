@@ -53,3 +53,10 @@ t = tester:insert{#tuple_max, tuple_max}
 tester:drop()
 ---
 ...
+tuple_max = nil
+---
+...
+collectgarbage('collect')
+---
+- 0
+...

@@ -18,6 +18,7 @@ include_directories(${LIBUTIL_FREEBSD_SRC})
 # Compile src/lua/*.lua files into src/lua/*.lua.c sources
 set(lua_sources)
 lua_source(lua_sources lua/init.lua)
+lua_source(lua_sources lua/string.lua)
 lua_source(lua_sources lua/fiber.lua)
 lua_source(lua_sources lua/buffer.lua)
 lua_source(lua_sources lua/uuid.lua)
@@ -38,7 +39,9 @@ lua_source(lua_sources lua/clock.lua)
 lua_source(lua_sources lua/title.lua)
 lua_source(lua_sources lua/argparse.lua)
 lua_source(lua_sources lua/env.lua)
+lua_source(lua_sources lua/pwd.lua)
 lua_source(lua_sources lua/trigger.lua)
+lua_source(lua_sources lua/table.lua)
 lua_source(lua_sources ../third_party/luafun/fun.lua)
 # LuaJIT jit.* library
 lua_source(lua_sources "${CMAKE_BINARY_DIR}/third_party/luajit/src/jit/bc.lua")
@@ -123,6 +126,7 @@ set (server_sources
      proc_title.c
      coeio_file.c
      clock.c
+     systemd.c
      lua/digest.c
      lua/init.c
      lua/fiber.c

@@ -35,6 +35,8 @@
 #include <stdint.h>
 #include <string.h>
 
+#include "salad/stailq.h"
+
 /*
  * Data stored in vinyl is organized in ranges and runs.
  * Runs correspond to data files written to disk, while
@@ -54,6 +56,7 @@ extern "C" {
 
 struct xlog;
 struct vclock;
+struct key_def;
 
 struct vy_recovery;
 
@@ -62,7 +65,7 @@ enum vy_log_record_type {
 	/**
 	 * Create a new vinyl index.
 	 * Requires vy_log_record::index_lsn, index_id, space_id,
-	 * path, path_len.
+	 * key_def.
 	 */
 	VY_LOG_CREATE_INDEX		= 0,
 	/**
@@ -72,8 +75,7 @@ enum vy_log_record_type {
 	VY_LOG_DROP_INDEX		= 1,
 	/**
 	 * Insert a new range into a vinyl index.
-	 * Requires vy_log_record::index_lsn, range_id,
-	 * range_begin, range_end.
+	 * Requires vy_log_record::index_lsn, range_id, begin, end.
 	 */
 	VY_LOG_INSERT_RANGE		= 2,
 	/**
@@ -91,13 +93,15 @@ enum vy_log_record_type {
 	 */
 	VY_LOG_PREPARE_RUN		= 4,
 	/**
-	 * Insert a run into a vinyl range.
-	 * Requires vy_log_record::range_id, run_id.
+	 * Commit a vinyl run file creation.
+	 * Requires vy_log_record::index_lsn, run_id, dump_lsn.
+	 *
+	 * Written after a run file was successfully created.
 	 */
-	VY_LOG_INSERT_RUN		= 5,
+	VY_LOG_CREATE_RUN		= 5,
 	/**
-	 * Delete a vinyl run.
-	 * Requires vy_log_record::run_id.
+	 * Drop a vinyl run.
+	 * Requires vy_log_record::run_id, gc_lsn.
 	 *
 	 * A record of this type indicates that the run is not in use
 	 * any more and its files can be safely removed. When the log
@@ -107,7 +111,7 @@ enum vy_log_record_type {
 	 * deleted, but not "forgotten" are not expunged from the log
 	 * on rotation.
 	 */
-	VY_LOG_DELETE_RUN		= 6,
+	VY_LOG_DROP_RUN			= 6,
 	/**
 	 * Forget a vinyl run.
 	 * Requires vy_log_record::run_id.
@@ -119,6 +123,32 @@ enum vy_log_record_type {
 	 * the new log on rotation.
 	 */
 	VY_LOG_FORGET_RUN		= 7,
+	/**
+	 * Insert a run slice into a range.
+	 * Requires vy_log_record::range_id, run_id, slice_id, begin, end.
+	 */
+	VY_LOG_INSERT_SLICE		= 8,
+	/**
+	 * Delete a run slice.
+	 * Requires vy_log_record::slice_id.
+	 */
+	VY_LOG_DELETE_SLICE		= 9,
+	/**
+	 * Update LSN of the last index dump.
+	 * Requires vy_log_record::index_lsn, dump_lsn.
+	 */
+	VY_LOG_DUMP_INDEX		= 10,
+	/**
+	 * We don't split vylog into snapshot and log - all records
+	 * are written to the same file. Since we need to load a
+	 * consistent view from a given checkpoint (for replication
+	 * and backup), we write a marker after the last record
+	 * corresponding to the snapshot. The following record
+	 * represents the marker.
+	 *
+	 * See also: @only_snapshot argument of vy_recovery_new().
+	 */
+	VY_LOG_SNAPSHOT			= 11,
 
 	vy_log_record_type_MAX
 };
@@ -127,11 +157,6 @@ enum vy_log_record_type {
 struct vy_log_record {
 	/** Type of the record. */
 	enum vy_log_record_type type;
-	/**
-	 * The log signature from the time when the record was
-	 * written. Set by vy_log_write().
-	 */
-	int64_t signature;
 	/**
 	 * Unique ID of the vinyl index.
 	 *
@@ -144,27 +169,27 @@ struct vy_log_record {
 	int64_t range_id;
 	/** Unique ID of the vinyl run. */
 	int64_t run_id;
-	/** Msgpack key for start of the vinyl range. */
-	const char *range_begin;
-	/** Msgpack key for end of the vinyl range. */
-	const char *range_end;
+	/** Unique ID of the run slice. */
+	int64_t slice_id;
+	/** Msgpack key for start of the range/slice. */
+	const char *begin;
+	/** Msgpack key for end of the range/slice. */
+	const char *end;
 	/** Ordinal index number in the space. */
 	uint32_t index_id;
 	/** Space ID. */
 	uint32_t space_id;
+	/** Index key definition. */
+	const struct key_def *key_def;
+	/** Max LSN stored on disk. */
+	int64_t dump_lsn;
 	/**
-	 * Path to the index. Empty string if default path is used.
-	 * Note, the string is not necessarily nul-termintaed, its
-	 * length is stored in path_len.
+	 * For deleted runs: LSN of the last checkpoint
+	 * that uses this run.
 	 */
-	const char *path;
-	/** Length of the path string. */
-	uint32_t path_len;
-	/**
-	 * True if the range is on the zero level of the index
-	 * ranges tree.
-	 */
-	bool is_level_zero;
+	int64_t gc_lsn;
+	/** Link in vy_log::tx. */
+	struct stailq_entry in_tx;
 };
 
 /**
@@ -213,13 +238,9 @@ vy_log_collect_garbage(int64_t signature);
 const char *
 vy_log_backup_path(struct vclock *vclock);
 
-/** Allocate a unique ID for a vinyl run. */
+/** Allocate a unique ID for a vinyl object. */
 int64_t
-vy_log_next_run_id(void);
-
-/** Allocate a unique ID for a vinyl range. */
-int64_t
-vy_log_next_range_id(void);
+vy_log_next_id(void);
 
 /**
  * Begin a transaction in the metadata log.
@@ -301,13 +322,17 @@ int
 vy_log_end_recovery(void);
 
 /**
- * Load records having signatures < @recovery_signature from
- * the metadata log and return the recovery context.
+ * Create a recovery context from the metadata log created
+ * by checkpoint with the given signature.
+ *
+ * If @only_snapshot is set, do not load records appended to
+ * the log after checkpoint (i.e. get a consistent view of
+ * Vinyl at the time of the checkpoint).
  *
  * Returns NULL on failure.
  */
 struct vy_recovery *
-vy_recovery_new(int64_t recovery_signature);
+vy_recovery_new(int64_t signature, bool only_snapshot);
 
 /**
  * Free a recovery context created by vy_recovery_new().
@@ -323,15 +348,16 @@ typedef int
  *
  * For each range and run of the index, this function calls @cb passing
  * a log record and an optional @cb_arg to it. A log record type is
- * either VY_LOG_CREATE_INDEX, VY_LOG_INSERT_RANGE, or VY_LOG_INSERT_RUN
- * unless the index was dropped. In the latter case, a VY_LOG_DROP_INDEX
- * record is issued in the end.
+ * either VY_LOG_CREATE_INDEX, VY_LOG_CREATE_RUN, VY_LOG_INSERT_RANGE,
+ * or VY_LOG_INSERT_SLICE unless the index was dropped. In the latter case,
+ * a VY_LOG_DROP_INDEX record is issued in the end.
  * The callback is supposed to rebuild the index structure and open run
  * files. If the callback returns a non-zero value, the function stops
  * iteration over ranges and runs and returns error.
  * To ease the work done by the callback, records corresponding to
- * runs of a range always go right after the range, in the
- * chronological order.
+ * slices of a range always go right after the range, in the
+ * chronological order, while an index's runs go after the index
+ * and before its ranges.
  *
  * If @include_deleted is set, this function will also iterate over
  * deleted objects, issuing the corresponding "delete" record for each
@@ -356,17 +382,16 @@ vy_recovery_iterate(struct vy_recovery *recovery, bool include_deleted,
 
 /** Helper to log a vinyl index creation. */
 static inline void
-vy_log_create_index(int64_t index_lsn, uint32_t index_id,
-		    uint32_t space_id, const char *path)
+vy_log_create_index(int64_t index_lsn, uint32_t index_id, uint32_t space_id,
+		    const struct key_def *key_def)
 {
 	struct vy_log_record record;
+	memset(&record, 0, sizeof(record));
 	record.type = VY_LOG_CREATE_INDEX;
-	record.signature = -1;
 	record.index_lsn = index_lsn;
 	record.index_id = index_id;
 	record.space_id = space_id;
-	record.path = path;
-	record.path_len = strlen(path);
+	record.key_def = key_def;
 	vy_log_write(&record);
 }
 
@@ -375,8 +400,8 @@ static inline void
 vy_log_drop_index(int64_t index_lsn)
 {
 	struct vy_log_record record;
+	memset(&record, 0, sizeof(record));
 	record.type = VY_LOG_DROP_INDEX;
-	record.signature = -1;
 	record.index_lsn = index_lsn;
 	vy_log_write(&record);
 }
@@ -384,17 +409,15 @@ vy_log_drop_index(int64_t index_lsn)
 /** Helper to log a vinyl range insertion. */
 static inline void
 vy_log_insert_range(int64_t index_lsn, int64_t range_id,
-		    const char *range_begin, const char *range_end,
-		    bool is_level_zero)
+		    const char *begin, const char *end)
 {
 	struct vy_log_record record;
+	memset(&record, 0, sizeof(record));
 	record.type = VY_LOG_INSERT_RANGE;
-	record.signature = -1;
 	record.index_lsn = index_lsn;
 	record.range_id = range_id;
-	record.range_begin = range_begin;
-	record.range_end = range_end;
-	record.is_level_zero = is_level_zero;
+	record.begin = begin;
+	record.end = end;
 	vy_log_write(&record);
 }
 
@@ -403,8 +426,8 @@ static inline void
 vy_log_delete_range(int64_t range_id)
 {
 	struct vy_log_record record;
+	memset(&record, 0, sizeof(record));
 	record.type = VY_LOG_DELETE_RANGE;
-	record.signature = -1;
 	record.range_id = range_id;
 	vy_log_write(&record);
 }
@@ -414,33 +437,84 @@ static inline void
 vy_log_prepare_run(int64_t index_lsn, int64_t run_id)
 {
 	struct vy_log_record record;
+	memset(&record, 0, sizeof(record));
 	record.type = VY_LOG_PREPARE_RUN;
-	record.signature = -1;
 	record.index_lsn = index_lsn;
 	record.run_id = run_id;
 	vy_log_write(&record);
 }
 
-/** Helper to log a vinyl run insertion. */
+/** Helper to log a vinyl run creation. */
 static inline void
-vy_log_insert_run(int64_t range_id, int64_t run_id)
+vy_log_create_run(int64_t index_lsn, int64_t run_id, int64_t dump_lsn)
 {
 	struct vy_log_record record;
-	record.type = VY_LOG_INSERT_RUN;
-	record.signature = -1;
-	record.range_id = range_id;
+	memset(&record, 0, sizeof(record));
+	record.type = VY_LOG_CREATE_RUN;
+	record.index_lsn = index_lsn;
 	record.run_id = run_id;
+	record.dump_lsn = dump_lsn;
 	vy_log_write(&record);
 }
 
 /** Helper to log a run deletion. */
 static inline void
-vy_log_delete_run(int64_t run_id)
+vy_log_drop_run(int64_t run_id, int64_t gc_lsn)
 {
 	struct vy_log_record record;
-	record.type = VY_LOG_DELETE_RUN;
-	record.signature = -1;
+	memset(&record, 0, sizeof(record));
+	record.type = VY_LOG_DROP_RUN;
 	record.run_id = run_id;
+	record.gc_lsn = gc_lsn;
+	vy_log_write(&record);
+}
+
+/** Helper to log a run cleanup. */
+static inline void
+vy_log_forget_run(int64_t run_id)
+{
+	struct vy_log_record record;
+	memset(&record, 0, sizeof(record));
+	record.type = VY_LOG_FORGET_RUN;
+	record.run_id = run_id;
+	vy_log_write(&record);
+}
+
+/** Helper to log creation of a run slice. */
+static inline void
+vy_log_insert_slice(int64_t range_id, int64_t run_id, int64_t slice_id,
+		    const char *begin, const char *end)
+{
+	struct vy_log_record record;
+	memset(&record, 0, sizeof(record));
+	record.type = VY_LOG_INSERT_SLICE;
+	record.range_id = range_id;
+	record.run_id = run_id;
+	record.slice_id = slice_id;
+	record.begin = begin;
+	record.end = end;
+	vy_log_write(&record);
+}
+
+/** Helper to log deletion of a run slice. */
+static inline void
+vy_log_delete_slice(int64_t slice_id)
+{
+	struct vy_log_record record;
+	memset(&record, 0, sizeof(record));
+	record.type = VY_LOG_DELETE_SLICE;
+	record.slice_id = slice_id;
+	vy_log_write(&record);
+}
+
+static inline void
+vy_log_dump_index(int64_t index_lsn, int64_t dump_lsn)
+{
+	struct vy_log_record record;
+	memset(&record, 0, sizeof(record));
+	record.type = VY_LOG_DUMP_INDEX;
+	record.index_lsn = index_lsn;
+	record.dump_lsn = dump_lsn;
 	vy_log_write(&record);
 }
 

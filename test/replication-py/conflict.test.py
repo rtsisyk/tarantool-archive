@@ -26,10 +26,10 @@ def parallel_run(cmd1, cmd2, compare):
 
     # wait for status changing in tarantool
     master_status = yaml.load(master.admin(
-        'box.info().replication[2].status', silent=True
+        'box.info().replication[2].upstream.status', silent=True
     ))[0]
     replica_status = yaml.load(replica.admin(
-        'box.info().replication[1].status', silent=True
+        'box.info().replication[1].upstream.status', silent=True
     ))[0]
 
     # wait for status
@@ -52,8 +52,8 @@ def prepare_cluster():
     replica.start()
 
     master.admin("box.cfg{replication='%s'}" % replica.iproto.uri, silent=True)
-    r1_id = replica.get_param('server')['id']
-    r2_id = master.get_param('server')['id']
+    r1_id = replica.get_param('id')
+    r2_id = master.get_param('id')
 
     master.admin("space = box.schema.space.create('test')", silent=True)
     master.admin("index = space:create_index('primary', { type = 'tree'})", silent=True)

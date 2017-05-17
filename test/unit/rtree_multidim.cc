@@ -83,7 +83,7 @@ struct CBox {
 		else if (DIMENSION == 2)
 			for (unsigned i = 0; i < DIMENSION; i++)
 				widths[i] = rand(SPACE_LIMIT / 3);
-		else if (DIMENSION == 2)
+		else if (DIMENSION == 3)
 			for (unsigned i = 0; i < DIMENSION; i++)
 				widths[i] = rand(SPACE_LIMIT / 2);
 		else
@@ -517,7 +517,9 @@ rand_test()
 			size_t id = set.RandUsedID();
 			struct rtree_rect rt;
 			set.entries[id].box.FillRTreeRect(&rt);
-			rtree_remove(&tree, &rt, (void *)(id + 1));
+			if (!rtree_remove(&tree, &rt, (void *)(id + 1))) {
+				printf("Error in remove\n");
+			}
 			set.DeleteBox(id);
 		}
 		assert(set.boxCount == tree.n_records);

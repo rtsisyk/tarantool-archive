@@ -5,7 +5,7 @@ fiber = require('fiber')
 s = box.schema.space.create('test', {engine='vinyl'})
 _ = s:create_index('primary', {unique=true, parts={1, 'unsigned'}, page_size=256, range_size=2048, run_count_per_level=1, run_size_ratio=1000})
 
-function vyinfo() return box.info.vinyl().db[box.space.test.id..'/0'] end
+function vyinfo() return box.space.test.index.primary:info() end
 
 range_count = 4
 tuple_size = math.ceil(vyinfo().page_size / 4)
@@ -34,25 +34,20 @@ test_run:cmd("setopt delimiter ''");
 
 vyinfo().range_count
 
--- Delete 90% of keys. Do it in two iterations, calling snapshot after
--- each of them in order to trigger compaction and actual cleanup.
+-- Delete 90% of keys.
+for k = 1,key_count do if k % 10 ~= 0 then s:delete(k) end end
+box.snapshot()
+
+-- Trigger compaction until ranges are coalesced.
 test_run:cmd("setopt delimiter ';'")
-for i = 1,2 do
-    for k = i,key_count,2 do
-        if k % 10 ~= 0 then s:delete(k) end
+while vyinfo().range_count > 1 do
+    for i = 1,key_count,keys_per_range do
+        s:delete{i}
     end
     box.snapshot()
-end;
+    fiber.sleep(0.01)
+end
 test_run:cmd("setopt delimiter ''");
-
--- Wait until compaction is over (ranges being compacted can't be coalesced)
-while vyinfo().range_count ~= vyinfo().run_count do fiber.sleep(0.01) end
-
--- Trigger range coalescing by calling snapshot.
-s:replace(gen_tuple(math.random(1, key_count))) box.snapshot()
-
--- Wait until adjacent ranges are coalesced
-while vyinfo().range_count > 1 do fiber.sleep(0.01) end
 
 vyinfo().range_count
 

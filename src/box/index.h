@@ -135,6 +135,23 @@ box_iterator_free(box_iterator_t *iterator);
 
 /** \cond public */
 
+typedef struct key_def box_key_def_t;
+
+/**
+ * Return a key definition for the index.
+ *
+ * Returned object is valid until the next yield.
+ *
+ * \param space_id space identifier
+ * \param index_id index identifier
+ * \retval key_def on success
+ * \retval NULL on error
+ * \sa box_tuple_compare()
+ * \sa box_tuple_format_new()
+ */
+const box_key_def_t *
+box_index_key_def(uint32_t space_id, uint32_t index_id);
+
 /**
  * Return the number of element in the index.
  *
@@ -243,6 +260,21 @@ box_index_count(uint32_t space_id, uint32_t index_id, int type,
 
 /** \endcond public */
 
+struct info_handler;
+
+/**
+ * Index introspection (index:info())
+ *
+ * \param space_id space identifier
+ * \param index_id index identifier
+ * \param info info handler
+ * \retval -1 on error (check box_error_last())
+ * \retval >=0 on success
+ */
+int
+box_index_info(uint32_t space_id, uint32_t index_id,
+	       struct info_handler *info);
+
 extern const char *iterator_type_strs[];
 
 #if defined(__cplusplus)
@@ -253,7 +285,7 @@ struct iterator {
 	struct tuple *(*next)(struct iterator *);
 	void (*free)(struct iterator *);
 	/* optional parameters used in lua */
-	uint32_t sc_version;
+	uint32_t schema_version;
 	uint32_t space_id;
 	uint32_t index_id;
 	struct Index *index;
@@ -319,7 +351,7 @@ public:
 	/* Description of a possibly multipart key. */
 	struct index_def *index_def;
 	/* Schema version on index construction moment */
-	uint32_t sc_version;
+	uint32_t schema_version;
 
 protected:
 	/**
@@ -367,6 +399,9 @@ public:
 	 * for which createReadViewForIterator() was called.
 	 */
 	virtual void destroyReadViewForIterator(struct iterator *iterator);
+
+	/** Introspection (index:info()) */
+	virtual void info(struct info_handler *handler) const;
 };
 
 /*

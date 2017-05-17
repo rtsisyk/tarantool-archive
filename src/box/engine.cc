@@ -39,6 +39,7 @@
 #include "small/rlist.h"
 #include "scoped_guard.h"
 #include "vclock.h"
+#include "gc.h"
 #include <stdlib.h>
 #include <string.h>
 #include <errinj.h>
@@ -77,9 +78,8 @@ void Engine::rollbackStatement(struct txn *, struct txn_stmt *)
 void Engine::bootstrap()
 {}
 
-void Engine::beginInitialRecovery(struct vclock *vclock)
+void Engine::beginInitialRecovery(const struct vclock *)
 {
-	(void) vclock;
 }
 
 void Engine::beginFinalRecovery()
@@ -112,13 +112,6 @@ Engine::buildSecondaryKey(struct space *, struct space *, Index *)
 int
 Engine::beginCheckpoint()
 {
-	return 0;
-}
-
-int
-Engine::prepareWaitCheckpoint(struct vclock *vclock)
-{
-	(void) vclock;
 	return 0;
 }
 
@@ -293,12 +286,12 @@ engine_bootstrap()
 }
 
 void
-engine_begin_initial_recovery(struct vclock *vclock)
+engine_begin_initial_recovery(const struct vclock *recovery_vclock)
 {
 	/* recover engine snapshot */
 	Engine *engine;
 	engine_foreach(engine) {
-		engine->beginInitialRecovery(vclock);
+		engine->beginInitialRecovery(recovery_vclock);
 	}
 }
 
@@ -338,16 +331,13 @@ int
 engine_commit_checkpoint(struct vclock *vclock)
 {
 	Engine *engine;
-	/* prepare to wait */
-	engine_foreach(engine) {
-		if (engine->prepareWaitCheckpoint(vclock) < 0)
-			return -1;
-	}
 	/* wait for engine snapshot completion */
 	engine_foreach(engine) {
 		if (engine->waitCheckpoint(vclock) < 0)
 			return -1;
 	}
+	if (gc_add_checkpoint(vclock) < 0)
+		return -1;
 	/* remove previous snapshot reference */
 	engine_foreach(engine) {
 		engine->commitCheckpoint(vclock);

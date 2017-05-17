@@ -145,7 +145,7 @@ vy_cache_env_destroy(struct vy_cache_env *e);
  */
 struct vy_cache {
 	/* Key definition for tuple comparison */
-	struct index_def *index_def;
+	struct key_def *key_def;
 	/* Tree of cache entries */
 	struct vy_cache_tree cache_tree;
 	/* The vesrion of state of cache_tree. Increments on every change */
@@ -157,11 +157,11 @@ struct vy_cache {
 /**
  * Allocate and initialize tuple cache.
  * @param env - pointer to common cache environment.
- * @param index_def - key definition for tuple comparison.
+ * @param key_def - key definition for tuple comparison.
  * @retval - new tuple cache.
  */
 struct vy_cache *
-vy_cache_new(struct vy_cache_env *env, struct index_def *index_def);
+vy_cache_new(struct vy_cache_env *env, struct key_def *key_def);
 
 /**
  * Destroy and deallocate tuple cache.
@@ -192,7 +192,7 @@ vy_cache_add(struct vy_cache *cache, struct tuple *stmt,
  * @param stmt - overwritten statement.
  */
 void
-vy_cache_on_write(struct vy_cache *cache, struct tuple *stmt);
+vy_cache_on_write(struct vy_cache *cache, const struct tuple *stmt);
 
 
 /**
@@ -215,7 +215,7 @@ struct vy_cache_iterator {
 	/* Search key data in terms of vinyl, vy_stmt_compare_raw argument */
 	const struct tuple *key;
 	/* LSN visibility, iterator shows values with lsn <= vlsn */
-	const int64_t *vlsn;
+	const struct vy_read_view **read_view;
 
 	/* State of iterator */
 	/* Current position in tree */
@@ -241,7 +241,7 @@ void
 vy_cache_iterator_open(struct vy_cache_iterator *itr,
 		       struct vy_iterator_stat *stat, struct vy_cache *cache,
 		       enum iterator_type iterator_type,
-		       const struct tuple *key, const int64_t *vlsn);
+		       const struct tuple *key, const struct vy_read_view **rv);
 
 #if defined(__cplusplus)
 } /* extern "C" { */

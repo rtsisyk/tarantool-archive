@@ -97,6 +97,7 @@ ch:put(5)
 t = {}
 for i = 35, 45 do table.insert(t, ch:put(i)) end
 t
+while #buffer < 15 do fiber.sleep(0.001) end
 table.sort(buffer)
 buffer
 
@@ -129,50 +130,68 @@ ch:is_closed()
 
 
 -- race conditions
-chs, res, count = {}, {}, 0
+chs, test_res, count = {}, {}, 0
 test_run:cmd("setopt delimiter ';'")
 for i = 1, 10 do table.insert(chs, fiber.channel()) end;
 
+fibers = {}
+
 for i = 1, 10 do
-    fiber.create(function(no)
-        fiber.self():name('pusher')
-        while true do
-            chs[no]:put({no})
-            fiber.sleep(0.001 * math.random())
-        end
-    end, i)
+    table.insert(fibers,
+        fiber.create(function(no)
+            fiber.self():name('pusher')
+            while true do
+                chs[no]:put({no})
+                fiber.sleep(0.001 * math.random())
+            end
+        end, i)
+    )
 end;
 
 for i = 1, 10 do
-    fiber.create(function(no)
-        fiber.self():name('receiver')
-        while true do
-            local r = chs[no]:get(math.random() * .001)
-            if r ~= nil and r[1] == no then
-                res[no] = true
-            elseif r ~= nil then
-                break
+    table.insert(fibers,
+        fiber.create(function(no)
+            fiber.self():name('receiver')
+            while true do
+                local r = chs[no]:get(math.random() * .001)
+                if r ~= nil and r[1] == no then
+                    test_res[no] = true
+                elseif r ~= nil then
+                    break
+                end
+                fiber.sleep(0.001 * math.random())
+                count = count + 1
             end
-            fiber.sleep(0.001 * math.random())
-            count = count + 1
-        end
-        res[no] = false
-    end, i)
+            test_res[no] = false
+        end, i)
+    )
 end;
 
 for i = 1, 100 do fiber.sleep(0.01) if count > 2000 then break end end;
 
-count > 2000, #res, res;
-
-test_run:cmd("setopt delimiter ''");
+count > 2000, #test_res, test_res;
+for _, fiber in ipairs(fibers) do
+    fiber:cancel()
+end;
 
 --
 -- gh-756: channel:close() leaks memory
 --
 
-ffi = require('ffi')
-ffi.cdef[[ struct gh756 { int k; }; ]]
-ct = ffi.metatype('struct gh756', { __gc = function() refs = refs - 1; end })
+ffi = require('ffi');
+do
+    stat, err = pcall(ffi.cdef, [[struct gh756 { int k; }]])
+    if not stat and not err:match('attempt to redefine') then
+        error(err)
+    end
+    stat, err = pcall(ffi.metatype, 'struct gh756',
+                      { __gc = function() refs = refs - 1; end })
+    if not stat and not err:match('cannot change a protected metatable') then
+        error(err)
+    end
+end;
+test_run:cmd("setopt delimiter ''");
+ct = ffi.typeof('struct gh756')
 
 -- create 10 objects and put they to a channel
 refs = 10

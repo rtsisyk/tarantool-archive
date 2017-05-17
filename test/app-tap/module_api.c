@@ -329,13 +329,102 @@ test_key_def_api(lua_State *L)
 	buf_end = mp_encode_uint(buf_end, 6);
 	box_tuple_t *tuple2 = box_tuple_new(format, buf, buf_end);
 
+	/* Enocode key */
+	buf_end = buf;
+	buf_end = mp_encode_array(buf_end, 2);
+	buf_end = mp_encode_uint(buf_end, 6);
+	buf_end = mp_encode_str(buf_end, "aa", 2);
+
 	bool cmp1 = box_tuple_compare(tuple1, tuple2, key_defs[0]) > 0;
 	bool cmp2 = box_tuple_compare(tuple1, tuple2, key_defs[1]) < 0;
+	bool cmp3 = box_tuple_compare_with_key(tuple1, buf, key_defs[0]) > 0;
+	bool cmp4 = box_tuple_compare_with_key(tuple2, buf, key_defs[0]) == 0;
 	box_tuple_unref(tuple1);
-	lua_pushboolean(L, cmp1 && cmp2);
+	lua_pushboolean(L, cmp1 && cmp2 && cmp3 && cmp4);
 	box_tuple_format_unref(format);
 	box_key_def_delete(key_defs[0]);
 	box_key_def_delete(key_defs[1]);
+	return 1;
+}
+
+static int
+test_key_def_api2(lua_State *L)
+{
+	/* Get space_id and index_id by name */
+	static const char *SPACE_NAME = "test";
+	static const char *INDEX_NAME = "primary";
+	uint32_t space_id = box_space_id_by_name(SPACE_NAME,
+		strlen(SPACE_NAME));
+	uint32_t index_id = box_index_id_by_name(space_id, INDEX_NAME,
+		strlen(INDEX_NAME));
+	assert(space_id != BOX_ID_NIL && index_id != BOX_ID_NIL);
+
+	/* Insert couple tuples into space */
+	char buf[64], *buf_end;
+	box_tuple_t *tuples[2];
+	for (int i = 0; i < 2; i++) {
+		buf_end = buf;
+		buf_end = mp_encode_array(buf_end, 1);
+		buf_end = mp_encode_uint(buf_end, i);
+		MAYBE_UNUSED int rc;
+		rc = box_replace(space_id, buf, buf_end, &tuples[i]);
+		assert(rc == 0 && tuples[i] != NULL);
+		box_tuple_ref(tuples[i]);
+	}
+
+	/* Check box_index_key_def() and box_tuple_compare() */
+	const box_key_def_t *key_def = box_index_key_def(space_id, index_id);
+	bool cmp1 = box_tuple_compare(tuples[0], tuples[1], key_def) < 0;
+	bool cmp2 = box_tuple_compare(tuples[1], tuples[0], key_def) > 0;
+	bool cmp3 = box_tuple_compare(tuples[0], tuples[0], key_def) == 0;
+	lua_pushboolean(L, cmp1 && cmp2 && cmp3);
+
+	/* Unref tuples */
+	for (int i = 0; i < 2; i++)
+		box_tuple_unref(tuples[i]);
+
+	return 1;
+}
+
+static int
+check_error(lua_State *L)
+{
+	box_error_raise(ER_UNSUPPORTED, "test for luaT_error");
+	luaT_error(L);
+	return 1;
+}
+
+static int
+test_call(lua_State *L)
+{
+	assert(luaL_loadbuffer(L, "", 0, "=eval") == 0);
+	assert(luaT_call(L, 0, LUA_MULTRET) == 0);
+	lua_pushboolean(L, true);
+	return 1;
+}
+
+static int
+cpcall_handler(lua_State *L)
+{
+	return 0;
+}
+
+static int
+test_cpcall(lua_State *L)
+{
+	assert(luaT_cpcall(L, cpcall_handler, 0) == 0);
+	(void)cpcall_handler;
+	lua_pushboolean(L, true);
+	return 1;
+}
+
+static int
+test_state(lua_State *L)
+{
+	lua_State *tarantool_L = luaT_state();
+	assert(lua_newthread(tarantool_L) != 0);
+	(void)tarantool_L;
+	lua_pushboolean(L, true);
 	return 1;
 }
 
@@ -343,7 +432,7 @@ LUA_API int
 luaopen_module_api(lua_State *L)
 {
 	(void) consts;
-	static const struct luaL_reg lib[] = {
+	static const struct luaL_Reg lib[] = {
 		{"test_say", test_say },
 		{"test_coio_call", test_coio_call },
 		{"test_coio_getaddrinfo", test_coio_getaddrinfo },
@@ -361,6 +450,11 @@ luaopen_module_api(lua_State *L)
 		{"test_clock", test_clock },
 		{"test_pushtuple", test_pushtuple},
 		{"test_key_def_api", test_key_def_api},
+		{"test_key_def_api2", test_key_def_api2},
+		{"check_error", check_error},
+		{"test_call", test_call},
+		{"test_cpcall", test_cpcall},
+		{"test_state", test_state},
 		{NULL, NULL}
 	};
 	luaL_register(L, "module_api", lib);

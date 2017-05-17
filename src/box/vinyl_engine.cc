@@ -43,7 +43,6 @@
 #include "xrow.h"
 #include "tuple.h"
 #include "txn.h"
-#include "relay.h"
 #include "space.h"
 #include "schema.h"
 #include "iproto_constants.h"
@@ -91,9 +90,9 @@ VinylEngine::bootstrap()
 }
 
 void
-VinylEngine::beginInitialRecovery(struct vclock *vclock)
+VinylEngine::beginInitialRecovery(const struct vclock *recovery_vclock)
 {
-	if (vy_begin_initial_recovery(env, vclock) != 0)
+	if (vy_begin_initial_recovery(env, recovery_vclock) != 0)
 		diag_raise();
 }
 
@@ -196,7 +195,7 @@ VinylEngine::prepare(struct txn *txn)
 {
 	struct vy_tx *tx = (struct vy_tx *) txn->engine_tx;
 
-	if (vy_prepare(env, tx))
+	if (vy_prepare(tx))
 		diag_raise();
 }
 
@@ -220,11 +219,7 @@ VinylEngine::commit(struct txn *txn, int64_t lsn)
 		txn_stmt_unref_tuples(stmt);
 	}
 	if (tx) {
-		int rc = vy_commit(env, tx, txn->n_rows ? lsn : 0);
-		if (rc == -1) {
-			panic("vinyl commit failed: txn->signature = %"
-			      PRIu64, lsn);
-		}
+		vy_commit(tx, txn->n_rows ? lsn : 0);
 		txn->engine_tx = NULL;
 	}
 }
@@ -236,7 +231,7 @@ VinylEngine::rollback(struct txn *txn)
 		return;
 
 	struct vy_tx *tx = (struct vy_tx *) txn->engine_tx;
-	vy_rollback(env, tx);
+	vy_rollback(tx);
 	txn->engine_tx = NULL;
 	struct txn_stmt *stmt;
 	stailq_foreach_entry(stmt, &txn->stmts, next) {
@@ -254,9 +249,9 @@ VinylEngine::rollbackStatement(struct txn *txn, struct txn_stmt *stmt)
 
 
 int
-VinylEngine::prepareWaitCheckpoint(struct vclock *vclock)
+VinylEngine::beginCheckpoint()
 {
-	return vy_checkpoint(env, vclock);
+	return vy_begin_checkpoint(env);
 }
 
 int

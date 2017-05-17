@@ -55,6 +55,7 @@
 #include "lua/fio.h"
 #include <small/ibuf.h>
 
+#include <ctype.h>
 #include <readline/readline.h>
 #include <readline/history.h>
 
@@ -101,20 +102,25 @@ extern char strict_lua[],
 	clock_lua[],
 	title_lua[],
 	env_lua[],
+	pwd_lua[],
+	table_lua[],
 	trigger_lua[],
+	string_lua[],
 	p_lua[], /* LuaJIT 2.1 profiler */
 	zone_lua[] /* LuaJIT 2.1 profiler */;
 
 static const char *lua_modules[] = {
 	/* Make it first to affect load of all other modules */
 	"strict", strict_lua,
+	"fun", fun_lua,
 	"tarantool", init_lua,
 	"errno", errno_lua,
 	"fiber", fiber_lua,
 	"env", env_lua,
+	"string", string_lua,
+	"table", table_lua,
 	"buffer", buffer_lua,
 	"msgpackffi", msgpackffi_lua,
-	"fun", fun_lua,
 	"crypto", crypto_lua,
 	"digest", digest_lua,
 	"uuid", uuid_lua,
@@ -130,6 +136,7 @@ static const char *lua_modules[] = {
 	"help", help_lua,
 	"internal.argparse", argparse_lua,
 	"internal.trigger", trigger_lua,
+	"pwd", pwd_lua,
 	/* jit.* library */
 	"jit.vmdef", vmdef_lua,
 	"jit.bc", bc_lua,
@@ -196,9 +203,8 @@ lbox_tonumber64(struct lua_State *L)
 			           (base == 2 || base == -1)) {
 				base = 2;  arg += 2; argl -= 2;
 			}
-		} else if (base == -1) {
-			base = 10;
 		}
+		base = (base == -1 ? 10 : base);
 		errno = 0;
 		char *arge;
 		unsigned long long result = strtoull(arg, &arge, base);
@@ -307,7 +313,7 @@ luaopen_tarantool(lua_State *L)
 	lua_pushstring(L, tarantool_version());
 	lua_setfield(L, LUA_GLOBALSINDEX, "_TARANTOOL");
 
-	static const struct luaL_reg initlib[] = {
+	static const struct luaL_Reg initlib[] = {
 		{NULL, NULL}
 	};
 	luaL_register_module(L, "tarantool", initlib);

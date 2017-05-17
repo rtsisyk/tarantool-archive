@@ -132,6 +132,7 @@ enum {
 #define INSTANCE_UUID_KEY "Instance"
 #define INSTANCE_UUID_KEY_V12 "Server"
 #define VCLOCK_KEY "VClock"
+#define VERSION_KEY "Version"
 
 static const char v13[] = "0.13";
 static const char v12[] = "0.12";
@@ -155,9 +156,13 @@ xlog_meta_format(const struct xlog_meta *meta, char *buf, int size)
 	if (vstr == NULL)
 		return -1;
 	char *instance_uuid = tt_uuid_str(&meta->instance_uuid);
-	int total = snprintf(buf, size, "%s\n%s\n" INSTANCE_UUID_KEY ": "
-		"%s\n" VCLOCK_KEY ": %s\n\n",
-		 meta->filetype, v13, instance_uuid, vstr);
+	int total = snprintf(buf, size,
+		"%s\n"
+		"%s\n"
+		VERSION_KEY ": %s\n"
+		INSTANCE_UUID_KEY ": %s\n"
+		VCLOCK_KEY ": %s\n\n",
+		meta->filetype, v13, PACKAGE_VERSION, instance_uuid, vstr);
 	assert(total > 0);
 	free(vstr);
 	return total;
@@ -271,6 +276,8 @@ xlog_meta_parse(struct xlog_meta *meta, const char **data,
 					  "offset %zd", off);
 				return -1;
 			}
+		} else if (memcmp(key, VERSION_KEY, key_end - key) == 0) {
+			/* Ignore Version: for now */
 		} else {
 			/*
 			 * Unknown key
@@ -840,6 +847,26 @@ err:
 	return -1;
 }
 
+int
+xdir_touch_xlog(struct xdir *dir, const struct vclock *vclock)
+{
+	char *filename;
+	int64_t signature = vclock_sum(vclock);
+	filename = xdir_format_filename(dir, signature, NONE);
+
+	if (dir->type != SNAP) {
+		assert(false);
+		diag_set(SystemError, "Can't touch xlog '%s'", filename);
+		return -1;
+	}
+	if (utime(filename, NULL) != 0) {
+		diag_set(SystemError, "Can't update xlog timestamp: '%s'",
+			 filename);
+		return -1;
+	}
+	return 0;
+}
+
 /**
  * In case of error, writes a message to the error log
  * and sets errno.
@@ -1023,8 +1050,8 @@ xlog_tx_write_zstd(struct xlog *log)
 		obuf_reset(&log->zbuf);
 		goto error;
 	});
-	ssize_t written;
 
+	ssize_t written;
 	written = fio_writevn(log->fd, log->zbuf.iov,
 			      log->zbuf.pos + 1);
 	if (written < 0) {
@@ -1103,8 +1130,10 @@ xlog_tx_write(struct xlog *log)
 		if (log->free_cache) {
 #ifdef HAVE_POSIX_FADVISE
 			/** free page cache */
-			posix_fadvise(log->fd, sync_from, sync_len,
-				      POSIX_FADV_DONTNEED);
+			if (posix_fadvise(log->fd, sync_from, sync_len,
+					  POSIX_FADV_DONTNEED) != 0) {
+				say_syserror("posix_fadvise, fd=%i", log->fd);
+			}
 #else
 			(void) sync_from;
 			(void) sync_len;
@@ -1143,11 +1172,15 @@ xlog_write_row(struct xlog *log, const struct xrow_header *packet)
 	int iovcnt = xrow_header_encode(packet, iov, 0);
 	struct obuf_svp svp = obuf_create_svp(&log->obuf);
 	for (int i = 0; i < iovcnt; ++i) {
-		ERROR_INJECT_U64(ERRINJ_WAL_WRITE_PARTIAL,
-			obuf_size(&log->obuf) > errinj_getu64(ERRINJ_WAL_WRITE_PARTIAL),
-			{	tnt_error(ClientError, ER_INJECTION, "xlog write injection");
-				obuf_rollback_to_svp(&log->obuf, &svp);
-				return -1;});
+		struct errinj *inj = errinj(ERRINJ_WAL_WRITE_PARTIAL,
+					    ERRINJ_INT);
+		if (inj != NULL && inj->iparam >= 0 &&
+		    obuf_size(&log->obuf) > (size_t)inj->iparam) {
+			diag_set(ClientError, ER_INJECTION,
+				 "xlog write injection");
+			obuf_rollback_to_svp(&log->obuf, &svp);
+			return -1;
+		};
 		if (obuf_dup(&log->obuf, iov[i].iov_base, iov[i].iov_len) <
 		    iov[i].iov_len) {
 			tnt_error(OutOfMemory, XLOG_FIXHEADER_SIZE,

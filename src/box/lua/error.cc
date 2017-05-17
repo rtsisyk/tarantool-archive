@@ -50,7 +50,6 @@ luaT_error_raise(lua_State *L)
 	const char *file = "";
 	unsigned line = 0;
 	lua_Debug info;
-
 	/* lua_type(L, 1) == LUA_TTABLE - box.error table */
 	int top = lua_gettop(L);
 	if (top <= 1) {
@@ -74,6 +73,9 @@ luaT_error_raise(lua_State *L)
 				lua_pushvalue(L, i);
 			lua_call(L, top - 1, 1);
 			reason = lua_tostring(L, -1);
+		} else if (strchr(reason, '%') != NULL) {
+			/* Missing arguments to format string */
+			luaL_error(L, "box.error(): bad arguments");
 		}
 	} else if (top == 2 && lua_istable(L, 2)) {
 		/* A special case that rethrows raw error (used by net.box) */
@@ -101,7 +103,7 @@ raise:
 		line = info.currentline;
 	}
 	say_debug("box.error() at %s:%i", file, line);
-	box_error_set(file, line, code, reason);
+	box_error_set(file, line, code, "%s", reason);
 	luaT_error(L);
 	return 0;
 }
@@ -137,7 +139,7 @@ lbox_errinj_set(struct lua_State *L)
 {
 	char *name = (char*)luaL_checkstring(L, 1);
 	struct errinj *errinj;
-	errinj = errinj_lookup(name);
+	errinj = errinj_by_name(name);
 	if (errinj == NULL) {
 		say_error("%s", name);
 		lua_pushfstring(L, "error: can't find error injection '%s'", name);
@@ -145,10 +147,13 @@ lbox_errinj_set(struct lua_State *L)
 	}
 	switch (errinj->type) {
 	case ERRINJ_BOOL:
-		errinj->state.bparam = lua_toboolean(L, 2);
+		errinj->bparam = lua_toboolean(L, 2);
 		break;
-	case ERRINJ_U64:
-		errinj->state.u64param = luaL_checkuint64(L, 2);
+	case ERRINJ_INT:
+		errinj->iparam = luaL_checkint64(L, 2);
+		break;
+	case ERRINJ_DOUBLE:
+		errinj->dparam = lua_tonumber(L, 2);
 		break;
 	default:
 		lua_pushfstring(L, "error: unknow injection type '%s'", name);
@@ -168,10 +173,13 @@ lbox_errinj_cb(struct errinj *e, void *cb_ctx)
 	lua_pushstring(L, "state");
 	switch (e->type) {
 	case ERRINJ_BOOL:
-		lua_pushboolean(L, e->state.bparam);
+		lua_pushboolean(L, e->bparam);
 		break;
-	case ERRINJ_U64:
-		luaL_pushuint64(L, e->state.u64param);
+	case ERRINJ_INT:
+		luaL_pushint64(L, e->iparam);
+		break;
+	case ERRINJ_DOUBLE:
+		lua_pushnumber(L, e->dparam);
 		break;
 	default:
 		unreachable();
@@ -191,7 +199,7 @@ lbox_errinj_info(struct lua_State *L)
 
 void
 box_lua_error_init(struct lua_State *L) {
-	static const struct luaL_reg errorlib[] = {
+	static const struct luaL_Reg errorlib[] = {
 		{NULL, NULL}
 	};
 	luaL_register_module(L, "box.error", errorlib);
@@ -228,7 +236,7 @@ box_lua_error_init(struct lua_State *L) {
 
 	lua_pop(L, 1);
 
-	static const struct luaL_reg errinjlib[] = {
+	static const struct luaL_Reg errinjlib[] = {
 		{"info", lbox_errinj_info},
 		{"set", lbox_errinj_set},
 		{NULL, NULL}

@@ -44,10 +44,12 @@ enum engine_flags {
 
 extern struct rlist engines;
 
-struct Handler;
-
 typedef int
 engine_backup_cb(const char *path, void *arg);
+
+#if defined(__cplusplus)
+
+struct Handler;
 
 /** Engine instance */
 class Engine {
@@ -131,8 +133,11 @@ public:
 	virtual void bootstrap();
 	/**
 	 * Begin initial recovery from snapshot or dirty disk data.
+	 * On local recovery @recovery_vclock points to the vclock
+	 * used for assigning LSNs to statements replayed from WAL.
+	 * On remote recovery, it is set to NULL.
 	 */
-	virtual void beginInitialRecovery(struct vclock *vclock);
+	virtual void beginInitialRecovery(const struct vclock *recovery_vclock);
 	/**
 	 * Notify engine about a start of recovering from WALs
 	 * that could be local WALs during local recovery
@@ -150,12 +155,6 @@ public:
 	 * Must not yield.
 	 */
 	virtual int beginCheckpoint();
-	/**
-	 * Prepare to wait for a checkpoint.
-	 * Called right after WAL checkpoint.
-	 * Must not yield.
-	 */
-	virtual int prepareWaitCheckpoint(struct vclock *vclock);
 	/**
 	 * Wait for a checkpoint to complete.
 	 */
@@ -286,7 +285,7 @@ engine_bootstrap();
  * Called at the start of recovery.
  */
 void
-engine_begin_initial_recovery(struct vclock *vclock);
+engine_begin_initial_recovery(const struct vclock *recovery_vclock);
 
 /**
  * Called in the middle of JOIN stage,
@@ -301,6 +300,16 @@ engine_begin_final_recovery();
  */
 void
 engine_end_recovery();
+
+/**
+ * Feed snapshot data as join events to the replicas.
+ * (called on the master).
+ */
+void
+engine_join(struct vclock *vclock, struct xstream *stream);
+
+extern "C" {
+#endif /* defined(__cplusplus) */
 
 int
 engine_begin_checkpoint();
@@ -320,11 +329,8 @@ engine_collect_garbage(int64_t lsn);
 int
 engine_backup(struct vclock *vclock, engine_backup_cb cb, void *cb_arg);
 
-/**
- * Feed snapshot data as join events to the replicas.
- * (called on the master).
- */
-void
-engine_join(struct vclock *vclock, struct xstream *stream);
+#if defined(__cplusplus)
+} /* extern "C" */
+#endif /* defined(__cplusplus) */
 
 #endif /* TARANTOOL_BOX_ENGINE_H_INCLUDED */

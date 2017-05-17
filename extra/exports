@@ -67,6 +67,7 @@ log_pid
 space_by_id
 space_run_triggers
 space_bsize
+box_schema_version
 
 tnt_openssl_init
 tnt_EVP_CIPHER_key_length
@@ -110,11 +111,16 @@ luaL_touint64
 luaL_toint64
 luaT_pushtuple
 luaT_istuple
+luaT_error
+luaT_call
+luaT_cpcall
+luaT_state
 box_txn
 box_txn_begin
 box_txn_commit
 box_txn_rollback
 box_txn_alloc
+box_index_key_def
 box_key_def_new
 box_key_def_delete
 box_tuple_format_default
@@ -139,6 +145,7 @@ box_tuple_update
 box_tuple_upsert
 box_tuple_extract_key
 box_tuple_compare
+box_tuple_compare_with_key
 box_return_tuple
 box_space_id_by_name
 box_index_id_by_name

@@ -54,7 +54,7 @@
 #include "tuple.h"
 #include "session.h"
 #include "xrow.h"
-#include "schema.h" /* sc_version */
+#include "schema.h" /* schema_version */
 #include "replication.h" /* instance_uuid */
 #include "iproto_constants.h"
 #include "rmean.h"
@@ -324,8 +324,8 @@ tx_process_disconnect(struct cmsg *m)
 {
 	struct iproto_msg *msg = (struct iproto_msg *) m;
 	struct iproto_connection *con = msg->connection;
-	tx_fiber_init(con->session, 0);
 	if (con->session) {
+		tx_fiber_init(con->session, 0);
 		if (! rlist_empty(&session_on_disconnect))
 			session_run_on_disconnect_triggers(con->session);
 		session_destroy(con->session);
@@ -584,7 +584,8 @@ iproto_decode_msg(struct iproto_msg *msg, const char **pos, const char *reqend,
 		}
 		request_decode_xc(&msg->request,
 				 (const char *) msg->header.body[0].iov_base,
-				 msg->header.body[0].iov_len);
+				 msg->header.body[0].iov_len,
+				 request_key_map(msg->header.type));
 		assert(msg->header.type < sizeof(dml_route)/sizeof(*dml_route));
 		cmsg_init(msg, dml_route[msg->header.type]);
 		break;
@@ -851,11 +852,11 @@ iproto_connection_on_output(ev_loop *loop, struct ev_io *watcher,
 }
 
 static int
-tx_check_schema(uint32_t schema_id)
+tx_check_schema(uint32_t new_schema_version)
 {
-	if (schema_id && schema_id != sc_version) {
+	if (new_schema_version && new_schema_version != schema_version) {
 		diag_set(ClientError, ER_WRONG_SCHEMA_VERSION,
-			 sc_version, schema_id);
+			 new_schema_version, schema_version);
 		return -1;
 	}
 	return 0;
@@ -868,7 +869,7 @@ tx_process1(struct cmsg *m)
 	struct obuf *out = &msg->iobuf->out;
 
 	tx_fiber_init(msg->connection->session, msg->header.sync);
-	if (tx_check_schema(msg->header.schema_id))
+	if (tx_check_schema(msg->header.schema_version))
 		goto error;
 
 	struct tuple *tuple;
@@ -900,7 +901,7 @@ tx_process_select(struct cmsg *m)
 
 	tx_fiber_init(msg->connection->session, msg->header.sync);
 
-	if (tx_check_schema(msg->header.schema_id))
+	if (tx_check_schema(msg->header.schema_version))
 		goto error;
 
 	port_create(&port);
@@ -930,7 +931,7 @@ tx_process_misc(struct cmsg *m)
 
 	tx_fiber_init(msg->connection->session, msg->header.sync);
 
-	if (tx_check_schema(msg->header.schema_id))
+	if (tx_check_schema(msg->header.schema_version))
 		goto error;
 
 	try {

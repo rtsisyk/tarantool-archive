@@ -37,6 +37,7 @@
 #include "iproto_constants.h"
 #include "txn.h"
 #include "rmean.h"
+#include "info.h"
 
 const char *iterator_type_strs[] = {
 	/* [ITER_EQ]  = */ "EQ",
@@ -164,7 +165,8 @@ box_tuple_extract_key(const box_tuple_t *tuple, uint32_t space_id,
 	try {
 		struct space *space = space_by_id(space_id);
 		Index *index = index_find_xc(space, index_id);
-		return tuple_extract_key(tuple, index->index_def, key_size);
+		return tuple_extract_key(tuple, &index->index_def->key_def,
+					 key_size);
 	} catch (ClientError *e) {
 		return NULL;
 	}
@@ -175,7 +177,7 @@ box_tuple_extract_key(const box_tuple_t *tuple, uint32_t space_id,
 /* {{{ Index -- base class for all indexes. ********************/
 
 Index::Index(struct index_def *index_def_arg)
-	:index_def(NULL), sc_version(::sc_version)
+	:index_def(NULL), schema_version(::schema_version)
 {
 	index_def = index_def_dup(index_def_arg);
 	if (index_def == NULL)
@@ -305,6 +307,19 @@ tuple_bless_null_xc(struct tuple *tuple)
 	if (tuple != NULL)
 		return tuple_bless_xc(tuple);
 	return NULL;
+}
+
+const box_key_def_t *
+box_index_key_def(uint32_t space_id, uint32_t index_id)
+{
+	try {
+		struct space *space;
+		/* no tx management, len is approximate in vinyl anyway. */
+		Index *index = check_index(space_id, index_id, &space);
+		return &index->index_def->key_def;
+	} catch (Exception *) {
+		return NULL;
+	}
 }
 
 ssize_t
@@ -479,7 +494,7 @@ box_index_iterator(uint32_t space_id, uint32_t index_id, int type,
 			diag_raise();
 		it = index->allocIterator();
 		index->initIterator(it, itype, key, part_count);
-		it->sc_version = sc_version;
+		it->schema_version = schema_version;
 		it->space_id = space_id;
 		it->index_id = index_id;
 		it->index = index;
@@ -497,8 +512,9 @@ int
 box_iterator_next(box_iterator_t *itr, box_tuple_t **result)
 {
 	assert(result != NULL);
+	assert(itr->next != NULL);
 	try {
-		if (itr->sc_version != sc_version) {
+		if (itr->schema_version != schema_version) {
 			struct space *space;
 			/* no tx management */
 			Index *index = check_index(itr->space_id, itr->index_id,
@@ -507,11 +523,11 @@ box_iterator_next(box_iterator_t *itr, box_tuple_t **result)
 				*result = NULL;
 				return 0;
 			}
-			if (index->sc_version > itr->sc_version) {
+			if (index->schema_version > itr->schema_version) {
 				*result = NULL; /* invalidate iterator */
 				return 0;
 			}
-			itr->sc_version = sc_version;
+			itr->schema_version = schema_version;
 		}
 	} catch (Exception *) {
 		*result = NULL;
@@ -531,6 +547,31 @@ box_iterator_free(box_iterator_t *it)
 {
 	if (it->free)
 		it->free(it);
+}
+
+/* }}} */
+
+/* {{{ Introspection */
+
+void
+Index::info(struct info_handler *info) const
+{
+	info_begin(info);
+	info_end(info);
+}
+
+int
+box_index_info(uint32_t space_id, uint32_t index_id,
+	       struct info_handler *info)
+{
+	try {
+		struct space *space;
+		Index *index = check_index(space_id, index_id, &space);
+		index->info(info);
+		return 0;
+	}  catch (Exception *) {
+		return -1;
+	}
 }
 
 /* }}} */

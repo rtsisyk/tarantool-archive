@@ -72,7 +72,8 @@ int
 vy_bootstrap(struct vy_env *e);
 
 int
-vy_begin_initial_recovery(struct vy_env *e, struct vclock *vclock);
+vy_begin_initial_recovery(struct vy_env *e,
+			  const struct vclock *recovery_vclock);
 
 int
 vy_begin_final_recovery(struct vy_env *e);
@@ -81,7 +82,7 @@ int
 vy_end_recovery(struct vy_env *e);
 
 int
-vy_checkpoint(struct vy_env *env, struct vclock *vclock);
+vy_begin_checkpoint(struct vy_env *env);
 
 int
 vy_wait_checkpoint(struct vy_env *env, struct vclock *vclock);
@@ -93,31 +94,25 @@ vy_end_checkpoint(struct vy_env *env);
  * Introspection
  */
 
-enum vy_info_type {
-	VY_INFO_TABLE_BEGIN,
-	VY_INFO_TABLE_END,
-	VY_INFO_STRING,
-	VY_INFO_U32,
-	VY_INFO_U64,
-};
+struct info_handler;
 
-struct vy_info_node {
-	enum vy_info_type type;
-	const char *key;
-	union {
-		const char *str;
-		uint32_t u32;
-		uint64_t u64;
-	} value;
-};
-
-struct vy_info_handler {
-	void (*fn)(struct vy_info_node *node, void *ctx);
-	void *ctx;
-};
-
+/*
+ * Engine introspection (box.info.vinyl())
+ *
+ * @param env environment
+ * @param handler info handler
+ */
 void
-vy_info_gather(struct vy_env *env, struct vy_info_handler *h);
+vy_info(struct vy_env *env, struct info_handler *handler);
+
+/**
+ * Index introspection (index:info())
+ *
+ * @param index index
+ * @param handler info handler
+ */
+void
+vy_index_info(struct vy_index *index, struct info_handler *handler);
 
 /*
  * Transaction
@@ -209,13 +204,13 @@ vy_upsert(struct vy_tx *tx, struct txn_stmt *stmt, struct space *space,
 	  struct request *request);
 
 int
-vy_prepare(struct vy_env *e, struct vy_tx *tx);
-
-int
-vy_commit(struct vy_env *e, struct vy_tx *tx, int64_t lsn);
+vy_prepare(struct vy_tx *tx);
 
 void
-vy_rollback(struct vy_env *e, struct vy_tx *tx);
+vy_commit(struct vy_tx *tx, int64_t lsn);
+
+void
+vy_rollback(struct vy_tx *tx);
 
 void *
 vy_savepoint(struct vy_tx *tx);

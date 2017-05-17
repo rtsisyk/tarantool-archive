@@ -1,4 +1,5 @@
-package.cpath = '../box/?.so;../box/?.dylib;'..package.cpath
+build_path = os.getenv("BUILDDIR")
+package.cpath = build_path..'/test/box/?.so;'..build_path..'/test/box/?.dylib;'..package.cpath
 
 log = require('log')
 net = require('net.box')
@@ -17,8 +18,8 @@ box.schema.func.drop("function1")
 box.schema.func.create('function1.args', {language = "C"})
 box.schema.user.grant('guest', 'execute', 'function', 'function1.args')
 c:call('function1.args')
-c:call('function1.args', "xx")
-c:call('function1.args', 15)
+c:call('function1.args', { "xx" })
+c:call('function1.args', { 15 })
 box.schema.func.drop("function1.args")
 
 box.schema.func.create('function1.multi_inc', {language = "C"})
@@ -26,11 +27,11 @@ box.schema.user.grant('guest', 'execute', 'function', 'function1.multi_inc')
 
 c:call('function1.multi_inc')
 box.space.test:select{}
-c:call('function1.multi_inc', 1, 2, 3, 4, 5, 6, 7, 8, 9, 10)
+c:call('function1.multi_inc', { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10 })
 box.space.test:select{}
-c:call('function1.multi_inc', 2, 4, 6, 8, 10)
+c:call('function1.multi_inc', { 2, 4, 6, 8, 10 })
 box.space.test:select{}
-c:call('function1.multi_inc', 0, 2, 4)
+c:call('function1.multi_inc', { 0, 2, 4 })
 box.space.test:select{}
 
 box.schema.func.drop("function1.multi_inc")
@@ -51,6 +52,13 @@ box.schema.func.create('f13', {language = 'lua'}),  func_lang('f13')
 box.schema.func.create('f14', {language = 'lUa'}),  func_lang('f14')
 box.schema.func.create('f15', {language = 'c'}),    func_lang('f15')
 box.schema.func.create('f16', {language = 'C'}),    func_lang('f16')
+
+box.schema.func.drop("f11")
+box.schema.func.drop("f12")
+box.schema.func.drop("f13")
+box.schema.func.drop("f14")
+box.schema.func.drop("f15")
+box.schema.func.drop("f16")
 
 box.space.test:drop()
 c:close()

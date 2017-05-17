@@ -9,7 +9,7 @@ local fio = require('fio')
 box.cfg{ log="tarantool.log", memtx_memory=107374182, rows_per_wal=5000}
 
 local test = tap.test("snapshot")
-test:plan(3)
+test:plan(5)
 
 -------------------------------------------------------------------------------
 -- gh-695: Avoid overwriting tuple data with information necessary for smfree()
@@ -43,7 +43,7 @@ end
 local function snapshot(lsn)
     fiber.name('snapshot')
     while continue_snapshoting do
-        local new_lsn = box.info.server.lsn
+        local new_lsn = box.info.lsn
         if new_lsn ~= lsn then
             lsn = new_lsn;
             pcall(box.snapshot)
@@ -66,7 +66,7 @@ fiber.create(noise)
 fiber.create(purge)
 fiber.create(noise)
 fiber.create(purge)
-fiber.create(snapshot, box.info.server.lsn)
+fiber.create(snapshot, box.info.lsn)
 
 fiber.sleep(0.3)
 continue_snapshoting = false
@@ -131,6 +131,18 @@ local function gh1094()
     test:ok(not sf and ss, msg)
 end
 gh1094()
+
+-- gh-2045 - test snapshot if nothing changed
+-- we wan't check snapshot update time because it may take long time to wait
+box.snapshot()
+box.snapshot()
+box.snapshot()
+test:ok(true, 'No crash for second snapshot w/o any changes')
+files = fio.glob(box.cfg.memtx_dir .. '/*.snap')
+table.sort(files)
+fio.unlink(files[#files])
+box.snapshot()
+test:ok(fio.stat(files[#files]) ~= nil, "Snapshot was recreated")
 
 test:check()
 os.exit(0)

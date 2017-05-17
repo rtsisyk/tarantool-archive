@@ -13,7 +13,7 @@ space:select()
 space:delete({'xxx'})
 
 test_run:cmd("setopt delimiter ';'")
-for _, v in ipairs({ 'path', 'build', 'tx_latency', 'cursor_latency',
+for _, v in ipairs({ 'tx_latency', 'cursor_latency',
                      'get_latency', 'gc_active', 'run_avg', 'run_count',
                      'page_count', 'memory_used', 'run_max', 'run_histogram',
                      'size', 'size_uncompressed', 'used', 'count', 'rps',
@@ -28,16 +28,19 @@ test_run:cmd("clear filter")
 
 space:drop()
 
+info = {}
 test_run:cmd("setopt delimiter ';'")
 for i = 1, 16 do
-	c = box.schema.space.create('i'..i, { engine='vinyl' })
-	c:create_index('pk')
+    local space = box.schema.space.create('i'..i, { engine='vinyl' })
+    local pk = space:create_index('pk')
+    info[i] = box_info_sort(pk:info())
 end;
-box_info_sort(box.info.vinyl().db);
+info;
 for i = 1, 16 do
 	box.space['i'..i]:drop()
 end;
 test_run:cmd("setopt delimiter ''");
+info = nil;
 
 space = box.schema.space.create('test', { engine = 'vinyl' })
 index = space:create_index('primary')
@@ -49,13 +52,6 @@ space:insert({3, 3})
 space:insert({4, 4})
 box.info.vinyl().performance.write_count - old_count == 8
 space:drop()
-
-space = box.schema.space.create('test', { engine = 'vinyl' })
-index = space:create_index('primary')
-space:replace({1})
-box.info.vinyl().memory.min_lsn == box.info.vclock[1]
-space:drop()
-box.info.vinyl().memory.min_lsn
 
 test_run:cmd('switch default')
 test_run:cmd("stop server vinyl_info")

@@ -52,8 +52,9 @@ struct ev_io;
 
 /*
  * Initialize box library
+ * @throws C++ exception
  */
-int
+void
 box_init(void);
 
 /**
@@ -97,12 +98,6 @@ extern uint32_t snapshot_version;
  * snapshot file.
  */
 int box_snapshot(void);
-
-/**
- * Remove files that are not needed to recover
- * from snapshot with @lsn or newer.
- */
-void box_gc(int64_t lsn);
 
 typedef int (*box_backup_cb)(const char *path, void *arg);
 

@@ -188,6 +188,11 @@
 #cmakedefine HAVE_SETPROGNAME 1
 #cmakedefine HAVE_GETPROGNAME 1
 
+/*
+* Defined if systemd is enabled
+ */
+#cmakedefine WITH_SYSTEMD 1
+
 /** \cond public */
 
 /** System configuration dir (e.g /etc) */
@@ -226,6 +231,9 @@
 #define DEFAULT_CFG SYSCONF_DIR "/" DEFAULT_CFG_FILENAME
 
 #cmakedefine ENABLE_ASAN 1
+
+/* Cacheline size to calculate alignments */
+#define CACHELINE_SIZE 64
 
 /*
  * vim: syntax=c

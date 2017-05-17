@@ -1,8 +1,8 @@
 #!/usr/bin/env tarantool
 
 box.cfg{log = "tarantool.log"}
-
-package.cpath = '../app-tap/?.so;../app-tap/?.dylib;'
+build_path = os.getenv("BUILDDIR")
+package.cpath = build_path .. '/test/app-tap/?.so;' .. build_path .. '/test/app-tap/?.dylib;'
 
 local function test_pushcdata(test, module)
     test:plan(6)
@@ -33,12 +33,15 @@ local function test_pushcdata(test, module)
 end
 
 local test = require('tap').test("module_api", function(test)
-    test:plan(17)
+    test:plan(22)
     local status, module = pcall(require, 'module_api')
     test:ok(status, "module is loaded")
     if not status then
         return
     end
+
+    local space  = box.schema.space.create("test")
+    space:create_index('primary')
 
     for name, fun in pairs(module) do
         if string.sub(name,1, 5) == 'test_' then
@@ -46,6 +49,11 @@ local test = require('tap').test("module_api", function(test)
         end
     end
 
+    local status, msg = pcall(module.check_error)
+    test:like(msg, 'luaT_error', 'luaT_error')
+
     test:test("pushcdata", test_pushcdata, module)
+
+    space:drop()
 end)
 os.exit(0)
